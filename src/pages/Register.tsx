@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { SkillMatchLogo } from "@/components/SkillMatchLogo";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/components/AuthProvider";
-import { Eye, EyeOff, UserPlus, Mail, CheckCircle } from "lucide-react";
+import { Eye, EyeOff, UserPlus, Mail, CheckCircle, ShieldCheck } from "lucide-react";
 
 const Register = () => {
     const [searchParams] = useSearchParams();
@@ -24,6 +24,9 @@ const Register = () => {
     const { toast } = useToast();
     const { user, userRole, loading: authLoading } = useAuth();
     const [emailSent, setEmailSent] = useState(false);
+    const [otp, setOtp] = useState("");
+    const [verifying, setVerifying] = useState(false);
+    const [resending, setResending] = useState(false);
 
     // If already logged in (e.g. arrived via email confirmation link), send to correct portal
     useEffect(() => {
@@ -87,6 +90,36 @@ const Register = () => {
         setLoading(false);
     };
 
+    const handleVerifyOtp = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setVerifying(true);
+
+        const { error } = await supabase.auth.verifyOtp({
+            email,
+            token: otp,
+            type: "signup",
+        });
+
+        if (error) {
+            toast({ title: "Invalid or expired code", description: error.message, variant: "destructive" });
+        } else {
+            toast({ title: "Verified!", description: "Your account is confirmed." });
+            navigate(role === "employer" ? "/onboarding/employer" : "/onboarding/jobseeker", { replace: true });
+        }
+        setVerifying(false);
+    };
+
+    const handleResendOtp = async () => {
+        setResending(true);
+        const { error } = await supabase.auth.resend({ type: "signup", email });
+        if (error) {
+            toast({ title: "Couldn't resend code", description: error.message, variant: "destructive" });
+        } else {
+            toast({ title: "Code resent", description: `Check ${email} for a new 6-digit code.` });
+        }
+        setResending(false);
+    };
+
     return (
         <div className="min-h-screen bg-[--ag-surface] flex">
             {/* Left side - branding */}
@@ -118,31 +151,61 @@ const Register = () => {
                     </div>
 
                     {emailSent ? (
-                        <div className="rounded-xl border-2 border-primary bg-primary/5 p-8 text-center space-y-4">
-                            <div className="mx-auto h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center">
-                                <Mail className="h-8 w-8 text-primary" />
+                        <div className="rounded-none border-2 border-[--ag-accent] bg-[--ag-accent-dim] p-8 text-center space-y-5">
+                            <div className="mx-auto h-16 w-16 rounded-none bg-[--ag-surface] border border-[--ag-accent]/30 flex items-center justify-center">
+                                <Mail className="h-8 w-8 text-[--ag-accent]" />
                             </div>
-                            <h2 className="text-2xl font-extrabold text-foreground">Check your email</h2>
-                            <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-                                We've sent a confirmation link to <strong className="text-foreground">{email}</strong>.
-                                Click the link to verify your account.
-                            </p>
-                            <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground pt-2">
-                                <CheckCircle className="h-3.5 w-3.5 text-metric-green" />
-                                Didn't get it? Check your spam folder or
+                            <div>
+                                <h2 className="text-2xl font-['Syne'] font-extrabold text-[--ag-text]">Enter your code</h2>
+                                <p className="text-sm text-[--ag-muted] max-w-sm mx-auto mt-2">
+                                    We sent a 6-digit code to <strong className="text-[--ag-text]">{email}</strong>.
+                                    Enter it below — no need to open your inbox.
+                                </p>
+                            </div>
+
+                            <form onSubmit={handleVerifyOtp} className="space-y-4">
+                                <Input
+                                    type="text"
+                                    inputMode="numeric"
+                                    autoComplete="one-time-code"
+                                    maxLength={6}
+                                    placeholder="123456"
+                                    value={otp}
+                                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                                    required
+                                    className="h-14 text-center text-2xl tracking-[0.5em] font-['JetBrains_Mono'] font-bold bg-[--ag-surface] border-[--ag-border] focus:border-[--ag-accent] rounded-none"
+                                />
+                                <Button
+                                    type="submit"
+                                    variant="hero"
+                                    disabled={verifying || otp.length !== 6}
+                                    className="w-full h-11 gap-2 rounded-none bg-[--ag-accent] text-[#07080F] font-bold uppercase tracking-widest hover:brightness-110 disabled:opacity-40"
+                                >
+                                    {verifying ? "Verifying..." : "Verify & Continue"}
+                                    {!verifying && <ShieldCheck className="h-4 w-4" />}
+                                </Button>
+                            </form>
+
+                            <div className="flex items-center justify-center gap-2 text-xs text-[--ag-muted] pt-2">
+                                <CheckCircle className="h-3.5 w-3.5 text-[--ag-success]" />
+                                Didn't get it? Check spam, or
                                 <button
                                     type="button"
-                                    onClick={() => setEmailSent(false)}
-                                    className="text-primary font-semibold hover:underline"
+                                    onClick={handleResendOtp}
+                                    disabled={resending}
+                                    className="text-[--ag-accent] font-semibold hover:underline disabled:opacity-50"
                                 >
-                                    try again
+                                    {resending ? "sending..." : "resend code"}
                                 </button>
                             </div>
-                            <Link to="/login">
-                                <Button variant="hero" className="mt-4 gap-2">
-                                    Go to Login
-                                </Button>
-                            </Link>
+
+                            <button
+                                type="button"
+                                onClick={() => { setEmailSent(false); setOtp(""); }}
+                                className="text-xs text-[--ag-muted] hover:text-[--ag-text] transition-colors"
+                            >
+                                ← Use a different email
+                            </button>
                         </div>
                     ) : (
                         <form onSubmit={handleRegister} className="space-y-5">
