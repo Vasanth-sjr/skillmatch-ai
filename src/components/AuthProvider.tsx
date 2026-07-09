@@ -94,12 +94,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [profile, setProfile] = useState<UserProfile | null>(null);
 
     const fetchProfile = async (userId: string) => {
-        const { data } = await supabase
-            .from("profiles")
-            .select("*")
-            .eq("id", userId)
-            .single();
-        if (data) setProfile(data as UserProfile);
+        // Retry on transient failures (e.g. session/token not fully attached
+        // yet right after a hard refresh) so a one-off blip doesn't bounce a
+        // fully-onboarded user back into the onboarding flow.
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const { data, error } = await supabase
+                .from("profiles")
+                .select("*")
+                .eq("id", userId)
+                .single();
+            if (data) { setProfile(data as UserProfile); return; }
+            if (error && attempt < 2) await new Promise(r => setTimeout(r, 400));
+        }
     };
 
     const refreshProfile = async () => {

@@ -54,7 +54,11 @@ export default function EmployerOnboarding() {
 
         const { error } = await supabase
             .from("profiles")
-            .update({
+            .upsert({
+                id: user.id,
+                email: user.email,
+                full_name: user.user_metadata?.full_name ?? null,
+                role: "employer",
                 headline: yourTitle,
                 bio: bio || null,
                 location,
@@ -64,8 +68,7 @@ export default function EmployerOnboarding() {
                 company_website: website || null,
                 company_description: description || null,
                 updated_at: new Date().toISOString(),
-            })
-            .eq("id", user.id);
+            }, { onConflict: "id" });
 
         if (error) {
             toast({ title: "Save failed", description: error.message, variant: "destructive" });

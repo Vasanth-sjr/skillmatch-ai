@@ -33,12 +33,15 @@ export default function JobSeekerOnboarding() {
 
     const { error } = await (supabase as any)
       .from("profiles")
-      .update({
+      .upsert({
+        id: user.id,
+        email: user.email,
+        full_name: user.user_metadata?.full_name ?? null,
+        role: "student",
         career_goal: careerGoal,
         career_status: careerStatus,
         updated_at: new Date().toISOString(),
-      })
-      .eq("id", user.id);
+      }, { onConflict: "id" });
 
     if (error) {
       toast({ title: "Save failed", description: error.message, variant: "destructive" });
