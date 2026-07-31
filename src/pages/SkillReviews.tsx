@@ -2,9 +2,10 @@ import { useState, useEffect } from "react";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { useAuth } from "@/components/AuthProvider";
+import { supabase } from "@/integrations/supabase/client";
 import { CAREER_PATHS, CareerPathKey } from "@/data/careerPaths";
 import { cn } from "@/lib/utils";
-import { Star, TrendingUp, AlertCircle, CheckCircle2, RefreshCw } from "lucide-react";
+import { Star, TrendingUp, AlertCircle, CheckCircle2, RefreshCw, Loader2 } from "lucide-react";
 
 // ─── Skill areas per career path ─────────────────────────────────────────────
 // 5 categories × 4 skills = 20 assessable skills per path
@@ -93,22 +94,47 @@ const RATING_LABELS: Record<number, { label: string; color: string }> = {
   5: { label: "Could teach it",    color: "text-[--ag-success]" },
 };
 
-type Ratings = Record<string, number>; // skill → 1-5
+type Ratings = Record<string, number>; // skill → most recent 1-5 rating
 
-function lsKey(uid: string, path: string) {
-  return `skillmatch_skill_reviews_${uid}_${path}`;
+// Ratings persist to skill_rating_history — an append-only table, not a
+// single overwritten value — so every self-assessment event is retained.
+// This is what later lets AMSCE compute a Behavioral Reliability Index
+// from how stable a user's self-ratings have been over time.
+
+async function loadRatingHistory(userId: string, path: string): Promise<Ratings> {
+  const { data } = await (supabase as any)
+    .from("skill_rating_history")
+    .select("skill, rating, rated_at")
+    .eq("user_id", userId)
+    .eq("career_path", path)
+    .order("rated_at", { ascending: true });
+
+  const current: Ratings = {};
+  for (const row of data ?? []) current[row.skill] = row.rating;
+  return current;
 }
-function loadRatings(uid: string, path: string): Ratings {
-  try { return JSON.parse(localStorage.getItem(lsKey(uid, path)) ?? "{}"); }
-  catch { return {}; }
+
+async function insertRating(userId: string, path: string, skill: string, rating: number) {
+  return (supabase as any).from("skill_rating_history").insert({
+    user_id: userId,
+    career_path: path,
+    skill,
+    rating,
+    rated_at: new Date().toISOString(),
+  });
 }
-function saveRatings(uid: string, path: string, r: Ratings) {
-  localStorage.setItem(lsKey(uid, path), JSON.stringify(r));
+
+async function clearRatingHistory(userId: string, path: string) {
+  return (supabase as any)
+    .from("skill_rating_history")
+    .delete()
+    .eq("user_id", userId)
+    .eq("career_path", path);
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function RatingButton({ value, active, onClick }: { value: number; active: boolean; onClick: () => void }) {
+function RatingButton({ value, active, disabled, onClick }: { value: number; active: boolean; disabled: boolean; onClick: () => void }) {
   const colors: Record<number, string> = {
     1: active ? "bg-[--ag-danger]   border-[--ag-danger]   text-white" : "border-[--ag-danger]/40   text-[--ag-danger]/70   hover:bg-[--ag-danger]/10",
     2: active ? "bg-orange-500      border-orange-500       text-white" : "border-orange-400/40      text-orange-400/70      hover:bg-orange-400/10",
@@ -119,8 +145,10 @@ function RatingButton({ value, active, onClick }: { value: number; active: boole
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       className={cn(
         "w-7 h-7 text-xs font-extrabold border transition-all flex items-center justify-center shrink-0",
+        disabled && "opacity-40 cursor-wait",
         colors[value],
       )}
       title={RATING_LABELS[value].label}
@@ -131,11 +159,12 @@ function RatingButton({ value, active, onClick }: { value: number; active: boole
 }
 
 function CategoryBlock({
-  category, skills, ratings, onRate,
+  category, skills, ratings, savingSkill, onRate,
 }: {
   category: string;
   skills: string[];
   ratings: Ratings;
+  savingSkill: string | null;
   onRate: (skill: string, val: number) => void;
 }) {
   const scores = skills.map(s => ratings[s] ?? 0).filter(v => v > 0);
@@ -180,7 +209,8 @@ function CategoryBlock({
                     key={v}
                     value={v}
                     active={r === v}
-                    onClick={() => onRate(skill, r === v ? 0 : v)}
+                    disabled={savingSkill === skill}
+                    onClick={() => onRate(skill, v)}
                   />
                 ))}
               </div>
@@ -201,29 +231,35 @@ export default function SkillReviews() {
     (profile?.career_goal as CareerPathKey) ?? "frontend_dev",
   );
   const [ratings, setRatings] = useState<Ratings>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null); // skill currently being saved
 
   // Sync path from profile on load
   useEffect(() => {
     if (profile?.career_goal) setSelectedPath(profile.career_goal as CareerPathKey);
   }, [profile?.career_goal]);
 
-  // Load ratings when path or user changes
+  // Load rating history when path or user changes
   useEffect(() => {
-    if (user) setRatings(loadRatings(user.id, selectedPath));
+    if (!user) return;
+    setLoading(true);
+    loadRatingHistory(user.id, selectedPath)
+      .then(setRatings)
+      .finally(() => setLoading(false));
   }, [user, selectedPath]);
 
-  const rate = (skill: string, val: number) => {
-    if (!user) return;
-    const next = { ...ratings, [skill]: val };
-    if (val === 0) delete next[skill];
-    setRatings(next);
-    saveRatings(user.id, selectedPath, next);
+  const rate = async (skill: string, val: number) => {
+    if (!user || val === ratings[skill]) return; // no-op on re-clicking the same value
+    setSaving(skill);
+    const { error } = await insertRating(user.id, selectedPath, skill, val);
+    if (!error) setRatings(prev => ({ ...prev, [skill]: val }));
+    setSaving(null);
   };
 
-  const resetAll = () => {
+  const resetAll = async () => {
     if (!user) return;
-    setRatings({});
-    saveRatings(user.id, selectedPath, {});
+    const { error } = await clearRatingHistory(user.id, selectedPath);
+    if (!error) setRatings({});
   };
 
   const areas = PATH_SKILLS[selectedPath];
@@ -318,17 +354,25 @@ export default function SkillReviews() {
               </div>
 
               {/* Category blocks */}
-              {areas.map(area => (
-                <CategoryBlock
-                  key={area.category}
-                  category={area.category}
-                  skills={area.skills}
-                  ratings={ratings}
-                  onRate={rate}
-                />
-              ))}
+              {loading ? (
+                <div className="flex items-center justify-center gap-2 py-16 text-[--ag-muted]">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span className="text-sm font-['JetBrains_Mono']">Loading your rating history…</span>
+                </div>
+              ) : (
+                areas.map(area => (
+                  <CategoryBlock
+                    key={area.category}
+                    category={area.category}
+                    skills={area.skills}
+                    ratings={ratings}
+                    savingSkill={saving}
+                    onRate={rate}
+                  />
+                ))
+              )}
 
-              {totalRated > 0 && (
+              {!loading && totalRated > 0 && (
                 <button
                   onClick={resetAll}
                   className="flex items-center gap-2 text-xs text-[--ag-muted] hover:text-[--ag-danger] transition-colors"

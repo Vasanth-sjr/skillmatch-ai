@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { useAuth } from "@/components/AuthProvider";
+import { supabase } from "@/integrations/supabase/client";
 import { LEARNING_RESOURCES, LearningResource, ResourceType } from "@/data/learningResources";
 import { CAREER_PATHS, CareerPathKey } from "@/data/careerPaths";
 import { cn } from "@/lib/utils";
@@ -27,7 +28,7 @@ const TYPE_STYLES: Record<ResourceType, string> = {
   Tool:      "bg-[--ag-muted]/10 text-[--ag-muted] border-[--ag-border]",
 };
 
-function ResourceCard({ r }: { r: LearningResource }) {
+function ResourceCard({ r, onOpen }: { r: LearningResource; onOpen: (r: LearningResource) => void }) {
   const Icon = TYPE_ICONS[r.type];
   return (
     <div className="rounded-none bg-[--ag-surface] border border-[--ag-border] p-5 flex flex-col gap-3 hover:shadow-[0_4px_20px_-5px_rgba(0,216,255,0.12)] hover:border-[--ag-accent]/40 transition-all duration-200">
@@ -74,6 +75,7 @@ function ResourceCard({ r }: { r: LearningResource }) {
         href={r.url}
         target="_blank"
         rel="noopener noreferrer"
+        onClick={() => onOpen(r)}
         className="flex items-center justify-center gap-2 py-2 text-xs font-bold uppercase tracking-wider bg-[--ag-accent-dim] text-[--ag-accent] border border-[--ag-accent]/30 hover:bg-[--ag-accent]/20 transition-colors"
       >
         Open Resource <ExternalLink className="h-3.5 w-3.5" />
@@ -87,7 +89,7 @@ const ALL_FILTERS: (ResourceType | "All")[] = [
 ];
 
 const Events = () => {
-  const { profile } = useAuth();
+  const { user, profile } = useAuth();
   const [selectedPath, setSelectedPath] = useState<CareerPathKey>(
     (profile?.career_goal as CareerPathKey) || "frontend_dev",
   );
@@ -98,6 +100,19 @@ const Events = () => {
       setSelectedPath(profile.career_goal as CareerPathKey);
     }
   }, [profile?.career_goal]);
+
+  // Fire-and-forget: records engagement for AMSCE's Learning Activity
+  // Analyzer. Doesn't block the resource opening in its new tab.
+  const logEngagement = (r: LearningResource) => {
+    if (!user) return;
+    (supabase as any).from("learning_resource_engagement").insert({
+      user_id: user.id,
+      resource_id: r.id,
+      career_path: selectedPath,
+      skill_tags: r.tags,
+      engaged_at: new Date().toISOString(),
+    });
+  };
 
   const resources = LEARNING_RESOURCES[selectedPath] || [];
   const filtered  = typeFilter === "All" ? resources : resources.filter(r => r.type === typeFilter);
@@ -168,7 +183,7 @@ const Events = () => {
           {/* Grid */}
           {filtered.length > 0 ? (
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {filtered.map(r => <ResourceCard key={r.id} r={r} />)}
+              {filtered.map(r => <ResourceCard key={r.id} r={r} onOpen={logEngagement} />)}
             </div>
           ) : (
             <div className="text-center py-16 text-[--ag-muted]">

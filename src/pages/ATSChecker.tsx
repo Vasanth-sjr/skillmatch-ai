@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { useAuth } from "@/components/AuthProvider";
-import { SKILL_POOLS } from "@/data/skillPools";
+import { VOCAB, SYNONYMS, canonical } from "@/lib/skillVocabulary";
 import { cn } from "@/lib/utils";
 import {
   ClipboardCheck, CheckCircle2, AlertCircle, XCircle, Upload,
@@ -35,74 +35,9 @@ async function extractTextFromPDF(file: File): Promise<string> {
   return fullText;
 }
 
-// ─── Tech vocabulary (same as before — anchors all skill extraction) ──────────
-
-const TECH_VOCAB_EXTRA: string[] = [
-  "python","java","javascript","typescript","golang","go","rust","cpp","csharp","ruby","php",
-  "swift","kotlin","scala","perl","r","matlab","dart","elixir","haskell","julia","bash","shell",
-  "react","vue","angular","svelte","nextjs","nuxtjs","gatsby","remix","astro","jquery",
-  "html","css","sass","scss","less","tailwind","bootstrap","materialui","chakra","shadcn",
-  "webpack","vite","rollup","parcel","babel","eslint","prettier",
-  "nodejs","express","fastapi","django","flask","rails","laravel","spring","springboot",
-  "nestjs","hapi","koa","fiber","gin","echo","actix","fastify",
-  "reactnative","flutter","android","ios","expo",
-  "postgresql","mysql","sqlite","mongodb","redis","elasticsearch","dynamodb",
-  "cassandra","neo4j","influxdb","mariadb","mssql","oracle","supabase","firebase",
-  "prisma","sequelize","typeorm","mongoose","drizzle",
-  "aws","gcp","azure","docker","kubernetes","k8s","terraform","ansible","puppet","chef",
-  "jenkins","github","gitlab","bitbucket","circleci","travis","heroku","vercel","netlify",
-  "nginx","apache","linux","ubuntu","helm","istio","prometheus","grafana","datadog",
-  "tensorflow","pytorch","keras","sklearn","pandas","numpy","matplotlib","seaborn","opencv",
-  "nltk","spacy","transformers","huggingface","langchain","openai","llm","bert","gpt",
-  "mlops","mlflow","airflow","xgboost","lightgbm","spark","hadoop","hive","kafka","flink",
-  "api","rest","graphql","grpc","websocket","microservices","serverless",
-  "devops","agile","scrum","tdd","bdd","oop","cicd","git","sql","nosql","orm","mvc","jwt","oauth",
-  "blockchain","solidity","web3","iot","embedded",
-  "etl","dbt","tableau","powerbi","excel","bigquery","redshift","snowflake","databricks",
-  "cybersecurity","owasp","ssl","tls","encryption","burpsuite","wireshark","splunk","nmap",
-  "figma","sketch","unity","unreal","opengl","webgl","threejs",
-];
-
-function buildVocab(): string[] {
-  const fromPools = Object.values(SKILL_POOLS).flat().map(s => s.toLowerCase());
-  return Array.from(new Set([...fromPools, ...TECH_VOCAB_EXTRA]));
-}
-const VOCAB = buildVocab();
-
-const SYNONYMS: Record<string, string[]> = {
-  "javascript": ["js","es6","es2015","ecmascript"],
-  "typescript": ["ts"],
-  "python":     ["py","python3"],
-  "golang":     ["go"],
-  "nodejs":     ["node","node.js"],
-  "react":      ["reactjs","react.js"],
-  "vue":        ["vuejs","vue.js","vue3"],
-  "nextjs":     ["next","next.js"],
-  "postgresql": ["postgres","pg","psql"],
-  "mongodb":    ["mongo"],
-  "kubernetes": ["k8s"],
-  "scikit-learn":["sklearn"],
-  "cpp":        ["c++","cplusplus"],
-  "csharp":     ["c#","dotnet",".net"],
-  "reactnative":["react native","rn"],
-};
-
-const ALIAS_MAP = new Map<string, string>();
-for (const [canonical, aliases] of Object.entries(SYNONYMS)) {
-  for (const alias of aliases) {
-    ALIAS_MAP.set(norm(alias), norm(canonical));
-  }
-}
-
-function norm(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9+#]/g, "").trim();
-}
-function canonical(s: string): string {
-  const n = norm(s);
-  return ALIAS_MAP.get(n) ?? n;
-}
-
 // ─── ATS Analysis engine ──────────────────────────────────────────────────────
+// Tech vocabulary, synonym mapping, and canonicalization now live in
+// src/lib/skillVocabulary.ts, shared with AMSCE's Interview Analyzer.
 // NOT keyword matching — structural + linguistic + semantic scoring.
 
 const ACTION_VERBS = [

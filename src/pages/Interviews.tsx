@@ -2,8 +2,10 @@ import { useState, useMemo, useEffect } from "react";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { useAuth } from "@/components/AuthProvider";
+import { supabase } from "@/integrations/supabase/client";
 import { INTERVIEW_QUESTIONS, InterviewQuestion, Difficulty } from "@/data/interviewQuestions";
 import { CAREER_PATHS, CareerPathKey } from "@/data/careerPaths";
+import { scoreInterviewAnswer } from "@/lib/interviewAnalyzer";
 import { cn } from "@/lib/utils";
 import { Brain, Lightbulb, RotateCcw, Trophy, Send, ChevronRight } from "lucide-react";
 
@@ -218,6 +220,25 @@ const Interviews = () => {
 
   const submitAnswer = (qId: string, answer: string) => {
     setSubmittedAnswers(prev => ({ ...prev, [qId]: answer }));
+
+    // "Skip" submits an empty answer to reveal the ideal answer without
+    // typing — that carries no evidence, so only score real attempts.
+    if (!answer.trim() || !user) return;
+
+    const question = questions.find(q => q.id === qId);
+    if (!question || question.skills.length === 0) return;
+
+    const scores = scoreInterviewAnswer(answer, question.skills);
+    const rows = scores.map(s => ({
+      user_id: user.id,
+      question_id: qId,
+      career_path: selectedPath,
+      skill: s.skill,
+      density: s.density,
+      matched_terms: s.matchedTerms,
+      answered_at: new Date().toISOString(),
+    }));
+    (supabase as any).from("interview_answer_analysis").insert(rows);
   };
 
   const nailed = Object.values(ratings).filter(r => r === "nailed").length;
