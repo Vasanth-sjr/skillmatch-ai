@@ -5,8 +5,18 @@ import { useAuth } from "@/components/AuthProvider";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { CAREER_PATHS, CareerPathKey } from "@/data/careerPaths";
+import { resolveSkillVocabTerms } from "@/data/skillLabelMap";
+import { canonical } from "@/lib/skillVocabulary";
+import {
+  computeSkillConfidence,
+  SkillConfidenceResult,
+  ConfidenceState,
+  InterviewEvidenceInput,
+  LearningEvidenceInput,
+} from "@/lib/amsce/adaptiveConfidenceEngine";
+import { ExperienceEntry, ProjectEntry } from "@/lib/amsce/resumeContextAnalyzer";
 import { cn } from "@/lib/utils";
-import { Star, TrendingUp, AlertCircle, CheckCircle2, RefreshCw, Loader2 } from "lucide-react";
+import { Star, TrendingUp, AlertCircle, CheckCircle2, RefreshCw, Loader2, ChevronDown, ShieldAlert } from "lucide-react";
 
 // ─── Skill areas per career path ─────────────────────────────────────────────
 // 5 categories × 4 skills = 20 assessable skills per path
@@ -96,13 +106,14 @@ const RATING_LABELS: Record<number, { label: string; color: string }> = {
 };
 
 type Ratings = Record<string, number>; // skill → most recent 1-5 rating
+type RatingHistories = Record<string, number[]>; // skill → every rating ever given, oldest first
 
 // Ratings persist to skill_rating_history — an append-only table, not a
 // single overwritten value — so every self-assessment event is retained.
-// This is what later lets AMSCE compute a Behavioral Reliability Index
-// from how stable a user's self-ratings have been over time.
+// This is what lets AMSCE compute a Behavioral Reliability Index from how
+// stable a user's self-ratings have been over time.
 
-async function loadRatingHistory(userId: string, path: string): Promise<Ratings> {
+async function loadRatingData(userId: string, path: string): Promise<{ current: Ratings; histories: RatingHistories }> {
   const { data } = await (supabase as any)
     .from("skill_rating_history")
     .select("skill, rating, rated_at")
@@ -111,8 +122,12 @@ async function loadRatingHistory(userId: string, path: string): Promise<Ratings>
     .order("rated_at", { ascending: true });
 
   const current: Ratings = {};
-  for (const row of data ?? []) current[row.skill] = row.rating;
-  return current;
+  const histories: RatingHistories = {};
+  for (const row of data ?? []) {
+    current[row.skill] = row.rating;
+    (histories[row.skill] ??= []).push(row.rating);
+  }
+  return { current, histories };
 }
 
 async function insertRating(userId: string, path: string, skill: string, rating: number) {
@@ -131,6 +146,57 @@ async function clearRatingHistory(userId: string, path: string) {
     .delete()
     .eq("user_id", userId)
     .eq("career_path", path);
+}
+
+// AMSCE evidence loaders — Mock Interview and Learning Activity evidence are
+// stored keyed by the compact technical vocabulary (e.g. "react", "docker"),
+// not by the human-readable Skill Reviews label, so each is grouped by that
+// raw key here and reconciled against a skill's resolved vocab terms by the
+// caller (see resolveSkillVocabTerms in skillLabelMap.ts).
+
+async function loadInterviewEvidence(userId: string, path: string): Promise<Record<string, InterviewEvidenceInput[]>> {
+  const { data } = await (supabase as any)
+    .from("interview_answer_analysis")
+    .select("skill, density, answered_at")
+    .eq("user_id", userId)
+    .eq("career_path", path);
+
+  const bySkill: Record<string, InterviewEvidenceInput[]> = {};
+  for (const row of data ?? []) {
+    (bySkill[row.skill] ??= []).push({ density: row.density, answeredAt: row.answered_at });
+  }
+  return bySkill;
+}
+
+async function loadLearningEvidence(userId: string, path: string): Promise<{ tags: string[]; engagedAt: string }[]> {
+  const { data } = await (supabase as any)
+    .from("learning_resource_engagement")
+    .select("skill_tags, engaged_at")
+    .eq("user_id", userId)
+    .eq("career_path", path);
+
+  return (data ?? []).map((row: any) => ({
+    tags: ((row.skill_tags ?? []) as string[]).map(canonical),
+    engagedAt: row.engaged_at,
+  }));
+}
+
+async function persistConfidenceScores(userId: string, path: string, results: SkillConfidenceResult[]) {
+  if (results.length === 0) return { error: null };
+  const rows = results.map(r => ({
+    user_id: userId,
+    career_path: path,
+    skill: r.skill,
+    skill_score: r.skillScore,
+    confidence_score: r.confidenceScore,
+    confidence_state: r.confidenceState,
+    explainability: r.explainability,
+    evidence_breakdown: r.breakdown,
+    last_computed_at: new Date().toISOString(),
+  }));
+  return (supabase as any)
+    .from("skill_confidence_scores")
+    .upsert(rows, { onConflict: "user_id,career_path,skill" });
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -159,14 +225,91 @@ function RatingButton({ value, active, disabled, onClick }: { value: number; act
   );
 }
 
+function confidenceBadgeClasses(state: ConfidenceState): string {
+  switch (state) {
+    case "High":   return "bg-[--ag-success]/10 border-[--ag-success]/40 text-[--ag-success]";
+    case "Medium": return "bg-[--ag-warning]/10 border-[--ag-warning]/40 text-[--ag-warning]";
+    default:       return "bg-[--ag-danger]/10  border-[--ag-danger]/40  text-[--ag-danger]";
+  }
+}
+
+function SkillRow({
+  skill, rating, savingSkill, onRate, confidence, computing,
+}: {
+  skill: string;
+  rating: number;
+  savingSkill: string | null;
+  onRate: (skill: string, val: number) => void;
+  confidence?: SkillConfidenceResult;
+  computing: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="px-4 py-3">
+      <div className="flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-[--ag-text] font-medium truncate">{skill}</p>
+          {rating > 0 && (
+            <p className={cn("text-xs mt-0.5", RATING_LABELS[rating].color)}>{RATING_LABELS[rating].label}</p>
+          )}
+        </div>
+        <div className="flex gap-1 shrink-0">
+          {[1, 2, 3, 4, 5].map(v => (
+            <RatingButton
+              key={v}
+              value={v}
+              active={rating === v}
+              disabled={savingSkill === skill}
+              onClick={() => onRate(skill, v)}
+            />
+          ))}
+        </div>
+      </div>
+
+      {rating > 0 && (
+        computing && !confidence ? (
+          <p className="mt-2 text-[11px] text-[--ag-muted] flex items-center gap-1.5">
+            <Loader2 className="h-3 w-3 animate-spin" /> Calibrating against your evidence…
+          </p>
+        ) : confidence ? (
+          <div className="mt-2">
+            <button
+              onClick={() => setExpanded(e => !e)}
+              className="flex items-center gap-2"
+            >
+              <span className={cn("text-[10px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 border", confidenceBadgeClasses(confidence.confidenceState))}>
+                {confidence.confidenceState} confidence
+              </span>
+              <span className="text-[11px] font-['JetBrains_Mono'] text-[--ag-muted]">
+                AMSCE {confidence.skillScore.toFixed(1)}/5
+              </span>
+              <ChevronDown className={cn("h-3 w-3 text-[--ag-muted] transition-transform", expanded && "rotate-180")} />
+            </button>
+            {expanded && (
+              <ul className="mt-2 space-y-1 border-l-2 border-[--ag-border] pl-3">
+                {confidence.explainability.map((line, i) => (
+                  <li key={i} className="text-[11px] text-[--ag-muted]">{line}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : null
+      )}
+    </div>
+  );
+}
+
 function CategoryBlock({
-  category, skills, ratings, savingSkill, onRate,
+  category, skills, ratings, savingSkill, onRate, confidence, computing,
 }: {
   category: string;
   skills: string[];
   ratings: Ratings;
   savingSkill: string | null;
   onRate: (skill: string, val: number) => void;
+  confidence: Record<string, SkillConfidenceResult>;
+  computing: boolean;
 }) {
   const scores = skills.map(s => ratings[s] ?? 0).filter(v => v > 0);
   const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
@@ -194,30 +337,17 @@ function CategoryBlock({
 
       {/* Skills */}
       <div className="divide-y divide-[--ag-border]">
-        {skills.map(skill => {
-          const r = ratings[skill] ?? 0;
-          return (
-            <div key={skill} className="flex items-center gap-3 px-4 py-3">
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-[--ag-text] font-medium truncate">{skill}</p>
-                {r > 0 && (
-                  <p className={cn("text-xs mt-0.5", RATING_LABELS[r].color)}>{RATING_LABELS[r].label}</p>
-                )}
-              </div>
-              <div className="flex gap-1 shrink-0">
-                {[1, 2, 3, 4, 5].map(v => (
-                  <RatingButton
-                    key={v}
-                    value={v}
-                    active={r === v}
-                    disabled={savingSkill === skill}
-                    onClick={() => onRate(skill, v)}
-                  />
-                ))}
-              </div>
-            </div>
-          );
-        })}
+        {skills.map(skill => (
+          <SkillRow
+            key={skill}
+            skill={skill}
+            rating={ratings[skill] ?? 0}
+            savingSkill={savingSkill}
+            onRate={onRate}
+            confidence={confidence[skill]}
+            computing={computing}
+          />
+        ))}
       </div>
     </div>
   );
@@ -233,8 +363,12 @@ export default function SkillReviews() {
     (profile?.career_goal as CareerPathKey) ?? "frontend_dev",
   );
   const [ratings, setRatings] = useState<Ratings>({});
+  const [histories, setHistories] = useState<RatingHistories>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null); // skill currently being saved
+
+  const [confidence, setConfidence] = useState<Record<string, SkillConfidenceResult>>({});
+  const [computing, setComputing] = useState(false);
 
   // Sync path from profile on load
   useEffect(() => {
@@ -245,14 +379,89 @@ export default function SkillReviews() {
   useEffect(() => {
     if (!user) return;
     setLoading(true);
-    loadRatingHistory(user.id, selectedPath)
-      .then(setRatings)
+    setConfidence({});
+    loadRatingData(user.id, selectedPath)
+      .then(({ current, histories }) => { setRatings(current); setHistories(histories); })
       .catch(err => {
         console.error("Failed to load skill rating history:", err);
         toast({ title: "Couldn't load ratings", description: String(err?.message ?? err), variant: "destructive" });
       })
       .finally(() => setLoading(false));
   }, [user, selectedPath]);
+
+  // AMSCE — recompute calibrated confidence for every rated skill whenever
+  // ratings, rating history, or the selected path change. Deterministic and
+  // cheap enough to simply recompute in full rather than diff incrementally.
+  useEffect(() => {
+    if (!user || loading) return;
+
+    const areas = PATH_SKILLS[selectedPath];
+    const allSkills = areas.flatMap(a => a.skills);
+    const skillsToScore = allSkills.filter(s => (ratings[s] ?? 0) > 0);
+
+    if (skillsToScore.length === 0) {
+      setConfidence({});
+      return;
+    }
+
+    let cancelled = false;
+    setComputing(true);
+
+    (async () => {
+      try {
+        const [interviewBySkill, learningRows] = await Promise.all([
+          loadInterviewEvidence(user.id, selectedPath),
+          loadLearningEvidence(user.id, selectedPath),
+        ]);
+        if (cancelled) return;
+
+        const profileSkills = profile?.skills ?? [];
+        const experience = (profile?.experience ?? []) as ExperienceEntry[];
+        const projects = ((profile as any)?.projects ?? []) as ProjectEntry[];
+        const careerGoal = (profile?.career_goal as CareerPathKey) ?? null;
+
+        const results: SkillConfidenceResult[] = skillsToScore.map(skill => {
+          const vocabTerms = resolveSkillVocabTerms(skill);
+          const interviewEvidence = vocabTerms.flatMap(t => interviewBySkill[t] ?? []);
+          const learningEvidence: LearningEvidenceInput[] = learningRows
+            .filter(row => vocabTerms.some(t => row.tags.includes(t)))
+            .map(row => ({ engagedAt: row.engagedAt }));
+
+          return computeSkillConfidence({
+            skillLabel: skill,
+            selfRating: ratings[skill],
+            ratingHistory: histories[skill] ?? [ratings[skill]],
+            careerGoal,
+            profileSkills,
+            experience,
+            projects,
+            interviewEvidence,
+            learningEvidence,
+          });
+        });
+
+        if (cancelled) return;
+
+        const next: Record<string, SkillConfidenceResult> = {};
+        for (const r of results) next[r.skill] = r;
+        setConfidence(next);
+
+        const { error } = await persistConfidenceScores(user.id, selectedPath, results);
+        if (error) {
+          console.error("Failed to persist skill confidence scores:", error);
+          toast({ title: "Confidence scores not saved", description: error.message, variant: "destructive" });
+        }
+      } catch (err: any) {
+        console.error("AMSCE confidence computation failed:", err);
+        toast({ title: "Couldn't compute confidence scores", description: String(err?.message ?? err), variant: "destructive" });
+      } finally {
+        if (!cancelled) setComputing(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, selectedPath, loading, ratings, histories]);
 
   const rate = async (skill: string, val: number) => {
     if (!user || val === ratings[skill]) return; // no-op on re-clicking the same value
@@ -263,6 +472,7 @@ export default function SkillReviews() {
       toast({ title: "Rating not saved", description: error.message, variant: "destructive" });
     } else {
       setRatings(prev => ({ ...prev, [skill]: val }));
+      setHistories(prev => ({ ...prev, [skill]: [...(prev[skill] ?? []), val] }));
     }
     setSaving(null);
   };
@@ -275,6 +485,8 @@ export default function SkillReviews() {
       toast({ title: "Reset failed", description: error.message, variant: "destructive" });
     } else {
       setRatings({});
+      setHistories({});
+      setConfidence({});
     }
   };
 
@@ -296,6 +508,14 @@ export default function SkillReviews() {
 
   // Strengths = rated 4 or 5
   const strengths = allSkills.filter(s => ratings[s] >= 4);
+
+  // AMSCE — skills the user rated highly but with little independent
+  // evidence to back it up yet. This is the invention's core surfaced
+  // output: a self-rating and its calibrated confidence disagreeing.
+  const needsVerification = allSkills.filter(s => {
+    const c = confidence[s];
+    return ratings[s] >= 4 && c && c.confidenceState === "Low";
+  });
 
   const goalPath = CAREER_PATHS[selectedPath];
   const completionPct = Math.round((totalRated / totalSkills) * 100);
@@ -321,7 +541,7 @@ export default function SkillReviews() {
               Skill Reviews
             </h1>
             <p className="text-sm text-[--ag-muted] mt-1">
-              Rate yourself honestly on each skill · Track growth over time · Find what to focus on next
+              Rate yourself honestly on each skill · AMSCE calibrates it against your resume, interviews & learning activity
             </p>
           </div>
 
@@ -384,6 +604,8 @@ export default function SkillReviews() {
                     ratings={ratings}
                     savingSkill={saving}
                     onRate={rate}
+                    confidence={confidence}
+                    computing={computing}
                   />
                 ))
               )}
@@ -452,6 +674,28 @@ export default function SkillReviews() {
                   <p className="text-xs text-[--ag-muted]">{completionPct}% assessment complete</p>
                 </div>
               </div>
+
+              {/* AMSCE — needs verification */}
+              {needsVerification.length > 0 && (
+                <div className="rounded-none bg-[--ag-surface] border border-[--ag-danger]/30 p-4">
+                  <p className="text-xs font-extrabold uppercase tracking-wider text-[--ag-danger] mb-1 flex items-center gap-2">
+                    <ShieldAlert className="h-3.5 w-3.5" /> Low Evidence, High Rating
+                  </p>
+                  <p className="text-[11px] text-[--ag-muted] mb-3">
+                    You rated these highly, but AMSCE hasn't found much supporting evidence yet in your profile, interviews, or learning activity.
+                  </p>
+                  <div className="space-y-1.5">
+                    {needsVerification.map(s => (
+                      <div key={s} className="flex items-center justify-between">
+                        <span className="text-xs text-[--ag-text]">{s}</span>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 border bg-[--ag-danger]/10 border-[--ag-danger]/30 text-[--ag-danger]">
+                          Low confidence
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Strengths */}
               {strengths.length > 0 && (
