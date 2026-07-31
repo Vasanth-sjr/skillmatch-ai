@@ -3,6 +3,7 @@ import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { useAuth } from "@/components/AuthProvider";
 import { supabase } from "@/integrations/supabase/client";
+import { useToast } from "@/hooks/use-toast";
 import { CAREER_PATHS, CareerPathKey } from "@/data/careerPaths";
 import { cn } from "@/lib/utils";
 import { Star, TrendingUp, AlertCircle, CheckCircle2, RefreshCw, Loader2 } from "lucide-react";
@@ -226,6 +227,7 @@ function CategoryBlock({
 
 export default function SkillReviews() {
   const { user, profile } = useAuth();
+  const { toast } = useToast();
 
   const [selectedPath, setSelectedPath] = useState<CareerPathKey>(
     (profile?.career_goal as CareerPathKey) ?? "frontend_dev",
@@ -245,6 +247,10 @@ export default function SkillReviews() {
     setLoading(true);
     loadRatingHistory(user.id, selectedPath)
       .then(setRatings)
+      .catch(err => {
+        console.error("Failed to load skill rating history:", err);
+        toast({ title: "Couldn't load ratings", description: String(err?.message ?? err), variant: "destructive" });
+      })
       .finally(() => setLoading(false));
   }, [user, selectedPath]);
 
@@ -252,14 +258,24 @@ export default function SkillReviews() {
     if (!user || val === ratings[skill]) return; // no-op on re-clicking the same value
     setSaving(skill);
     const { error } = await insertRating(user.id, selectedPath, skill, val);
-    if (!error) setRatings(prev => ({ ...prev, [skill]: val }));
+    if (error) {
+      console.error("Failed to save rating:", error);
+      toast({ title: "Rating not saved", description: error.message, variant: "destructive" });
+    } else {
+      setRatings(prev => ({ ...prev, [skill]: val }));
+    }
     setSaving(null);
   };
 
   const resetAll = async () => {
     if (!user) return;
     const { error } = await clearRatingHistory(user.id, selectedPath);
-    if (!error) setRatings({});
+    if (error) {
+      console.error("Failed to reset ratings:", error);
+      toast({ title: "Reset failed", description: error.message, variant: "destructive" });
+    } else {
+      setRatings({});
+    }
   };
 
   const areas = PATH_SKILLS[selectedPath];

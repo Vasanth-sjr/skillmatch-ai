@@ -111,6 +111,8 @@ const Events = () => {
       career_path: selectedPath,
       skill_tags: r.tags,
       engaged_at: new Date().toISOString(),
+    }).then(({ error }: { error: any }) => {
+      if (error) console.error("Failed to log learning resource engagement:", error);
     });
   };
 

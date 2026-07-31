@@ -238,7 +238,10 @@ const Interviews = () => {
       matched_terms: s.matchedTerms,
       answered_at: new Date().toISOString(),
     }));
-    (supabase as any).from("interview_answer_analysis").insert(rows);
+    (supabase as any).from("interview_answer_analysis").insert(rows)
+      .then(({ error }: { error: any }) => {
+        if (error) console.error("Failed to save interview answer analysis:", error);
+      });
   };
 
   const nailed = Object.values(ratings).filter(r => r === "nailed").length;
