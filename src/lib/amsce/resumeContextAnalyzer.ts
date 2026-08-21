@@ -12,7 +12,7 @@
 // resume content, and using it means this evidence source doesn't depend
 // on the user having separately run the ATS Checker.
 
-import { vocabTermFoundIn } from "@/lib/skillVocabulary";
+import { textEvidencesTerm, canonicalTermsIn } from "@/lib/skillVocabulary";
 import { getSkillEcosystem } from "@/data/skillEcosystems";
 
 export interface ExperienceEntry {
@@ -46,7 +46,13 @@ export function analyzeResumeContext(
   experience: ExperienceEntry[],
   projects: ProjectEntry[],
 ): ResumeContextEvidence {
-  const matchesAny = (text: string) => vocabTerms.some(term => vocabTermFoundIn(text, term));
+  // Canonical matching, so a profile written as "Power BI" matches the
+  // compact "powerbi" the skill map supplies. Direct substring matching
+  // alone missed every multi-word skill.
+  const matchesAny = (text: string) => {
+    const textTerms = canonicalTermsIn(text);
+    return vocabTerms.some(term => textEvidencesTerm(text, term, textTerms));
+  };
 
   const inSkillsList = matchesAny(profileSkills.join(" "));
 
@@ -79,8 +85,9 @@ export function analyzeResumeContext(
   // Skill Depth: union of every mapped term's related-ecosystem terms,
   // checked against whichever text actually carried the match.
   const searchText = (inContext ? contextText : profileSkills.join(" "));
+  const searchTerms = canonicalTermsIn(searchText);
   const relatedTerms = Array.from(new Set(vocabTerms.flatMap(t => getSkillEcosystem(t).related)));
-  const depthMatches = relatedTerms.filter(term => vocabTermFoundIn(searchText, term));
+  const depthMatches = relatedTerms.filter(term => textEvidencesTerm(searchText, term, searchTerms));
 
   return {
     presence,

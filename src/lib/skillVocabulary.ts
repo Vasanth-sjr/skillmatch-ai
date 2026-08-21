@@ -30,6 +30,17 @@ export const TECH_VOCAB_EXTRA: string[] = [
   "etl","dbt","tableau","powerbi","excel","bigquery","redshift","snowflake","databricks",
   "cybersecurity","owasp","ssl","tls","encryption","burpsuite","wireshark","splunk","nmap",
   "figma","sketch","unity","unreal","opengl","webgl","threejs",
+  // Concept skills that people genuinely write in resumes but that a
+  // tooling-only vocabulary misses. Added because auditing skillLabelMap
+  // against VOCAB showed these labels could never match anything, so the
+  // evidence modules scored them zero regardless of what the user wrote.
+  // Deliberately multi-word and specific: generic single words like
+  // "presentation" or "layout" would false-positive constantly.
+  "rest api","user research","user interviews","journey mapping","survey design",
+  "risk assessment","vulnerability scanning","threat hunting","incident response",
+  "product metrics","dashboard design","offline storage","app signing",
+  "performance profiling","performance optimization","networking","cia triad",
+  "penetration testing","cross-platform state","push notifications",
 ];
 
 function buildVocab(): string[] {
@@ -82,6 +93,39 @@ export function vocabTermFoundIn(text: string, term: string): boolean {
   const esc = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`(?<=[^a-z0-9+#]|^)${esc}(?=[^a-z0-9+#]|$)`);
   return re.test(lowerText);
+}
+
+/**
+ * Whether `text` evidences `term`, tolerating the difference between the
+ * compact form the skill map uses and the spaced form people actually
+ * write.
+ *
+ * This exists because `vocabTermFoundIn` alone silently failed on every
+ * multi-word skill. skillLabelMap compacts "Power BI" to "powerbi", but
+ * a profile says "Power BI" with a space, and a token-boundary search
+ * for "powerbi" never matches it. The same held for System Design, REST
+ * API Design, Machine Learning and Deep Learning — a large share of the
+ * skill catalogue was unmatchable in resume and interview text.
+ *
+ * The direct check is kept as well as the canonical one, so terms that
+ * aren't in VOCAB (the slugified soft-skill fallbacks) behave exactly as
+ * before rather than regressing.
+ */
+export function textEvidencesTerm(text: string, term: string, textTerms?: Set<string>): boolean {
+  if (vocabTermFoundIn(text, term)) return true;
+  const terms = textTerms ?? canonicalTermsIn(text);
+  return terms.has(canonical(term));
+}
+
+/**
+ * Canonicalized set of every vocabulary term present in `text`.
+ *
+ * Callers matching many terms against one body of text should build this
+ * once and pass it to `textEvidencesTerm` — extraction scans the whole
+ * vocabulary, so doing it per term is needlessly quadratic.
+ */
+export function canonicalTermsIn(text: string): Set<string> {
+  return new Set(extractVocabTerms(text).map(canonical));
 }
 
 /** Every VOCAB term (canonicalized) found anywhere in `text`. */

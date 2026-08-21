@@ -12,7 +12,7 @@
 // AMSCE's Evidence Normalizer and Cross-Modal Consistency Engine (Phase 3).
 // It does not itself compute confidence — it only measures density.
 
-import { vocabTermFoundIn } from "./skillVocabulary";
+import { textEvidencesTerm, canonicalTermsIn } from "./skillVocabulary";
 import { getSkillEcosystem } from "@/data/skillEcosystems";
 
 export interface SkillDensityScore {
@@ -33,11 +33,15 @@ export function scoreInterviewAnswer(answer: string, skills: string[]): SkillDen
   const wordCount = answer.trim().split(/\s+/).filter(Boolean).length;
   const lengthFactor = Math.min(1, wordCount / MIN_WORDS_FOR_FULL_CREDIT);
 
+  // Extracted once: matching every candidate term against the answer
+  // individually would rescan the whole vocabulary per term.
+  const answerTerms = canonicalTermsIn(answer);
+
   return skills.map(skill => {
     const eco = getSkillEcosystem(skill);
     const candidateTerms = [skill, ...eco.related];
 
-    const matchedTerms = candidateTerms.filter(term => vocabTermFoundIn(answer, term));
+    const matchedTerms = candidateTerms.filter(term => textEvidencesTerm(answer, term, answerTerms));
     const breadth = Math.min(1, matchedTerms.length / (eco.expected + 1));
     const density = Math.round(breadth * lengthFactor * 100) / 100;
 

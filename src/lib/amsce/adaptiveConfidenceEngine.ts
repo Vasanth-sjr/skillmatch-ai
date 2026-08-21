@@ -16,7 +16,10 @@ import { analyzeCareerGoalAlignment } from "./careerGoalAnalyzer";
 import { analyzeCertificates } from "./certificateAnalyzer";
 import { CertificateEvidence } from "@/lib/certificates/certificateEvidence";
 import { freshnessDiscount, HALF_LIFE_MONTHS } from "./evidenceNormalizer";
-import { computeAgreement, computeBehavioralReliabilityIndex, computeSkillDepthScore } from "./crossModalConsistency";
+import {
+  computeAgreement, computeCoverage,
+  computeBehavioralReliabilityIndex, computeSkillDepthScore,
+} from "./crossModalConsistency";
 
 export type ConfidenceState = "Low" | "Medium" | "High";
 
@@ -42,6 +45,17 @@ export interface EvidenceModuleSummary {
   rawEvidence: number;
   discountedEvidence: number;
   timestamp: string | null;
+  /**
+   * Whether this module makes a claim about the user POSSESSING the
+   * skill, as opposed to supplying context about it.
+   *
+   * Career Goal Alignment is contextual: it says the skill matters for
+   * the user's chosen path, not that they have it. Feeding it into
+   * Agreement or Coverage is a category error — a career goal cannot
+   * corroborate or contradict a certificate, because it isn't talking
+   * about the same question.
+   */
+  evidential: boolean;
 }
 
 export interface SkillConfidenceResult {
@@ -53,6 +67,7 @@ export interface SkillConfidenceResult {
   breakdown: {
     selfRating: number;
     agreement: number;
+    coverage: number;
     bri: number;
     sds: number;
     rawEvidenceStrength: number;
@@ -106,31 +121,44 @@ export function computeSkillConfidence(params: ComputeConfidenceParams): SkillCo
       name: "Resume / Projects", weight: WEIGHTS.resume,
       rawEvidence: resume.presence, timestamp: resume.timestamp,
       discountedEvidence: freshnessDiscount(resume.presence, resume.timestamp, HALF_LIFE_MONTHS.resume),
+      evidential: true,
     },
     {
       name: "Mock Interview", weight: WEIGHTS.interview,
       rawEvidence: interviewRaw, timestamp: interviewTimestamp,
       discountedEvidence: freshnessDiscount(interviewRaw, interviewTimestamp, HALF_LIFE_MONTHS.interview),
+      evidential: true,
     },
     {
       name: "Certificates", weight: WEIGHTS.certificate,
       rawEvidence: certificate.value, timestamp: certificate.timestamp,
       discountedEvidence: freshnessDiscount(certificate.value, certificate.timestamp, HALF_LIFE_MONTHS.certificate),
+      evidential: true,
     },
     {
       name: "Career Goal Alignment", weight: WEIGHTS.careerGoal,
       rawEvidence: careerGoalScore, timestamp: null,
       discountedEvidence: careerGoalScore, // always current — no decay
+      evidential: false, // context, not a claim of possession
     },
     {
       name: "Learning Activity", weight: WEIGHTS.learning,
       rawEvidence: learningRaw, timestamp: learningTimestamp,
       discountedEvidence: freshnessDiscount(learningRaw, learningTimestamp, HALF_LIFE_MONTHS.learning),
+      evidential: true,
     },
   ];
 
   // ── Cross-modal consistency ──────────────────────────────────────────
-  const agreement = computeAgreement(modules.map(m => m.discountedEvidence));
+  // Agreement and Coverage are computed over EVIDENTIAL modules only.
+  // Career Goal Alignment describes why a skill matters to the user, not
+  // whether they have it, so it can neither corroborate nor contradict
+  // the others. It still contributes to rawEvidenceStrength below, which
+  // is a measure of overall support rather than of consistency.
+  const evidentialModules = modules.filter(m => m.evidential);
+
+  const agreement = computeAgreement(evidentialModules.map(m => m.discountedEvidence));
+  const coverage = computeCoverage(evidentialModules);
   const bri = computeBehavioralReliabilityIndex(ratingHistory);
 
   const avgExpectedBreadth =
@@ -138,8 +166,24 @@ export function computeSkillConfidence(params: ComputeConfidenceParams): SkillCo
   const sds = computeSkillDepthScore(resume.depthMatches, avgExpectedBreadth);
 
   // ── Adaptive confidence + calibration ────────────────────────────────
+  //
+  // confidence = Agreement × BRI × CoverageFactor × DepthFactor
+  //
+  // Each term answers a different question, and keeping them separate is
+  // what stopped evidence from being self-defeating:
+  //
+  //   Agreement      do the sources that spoke concur?
+  //   BRI            has the user's own rating been stable?
+  //   CoverageFactor how much of the evidence base spoke at all?
+  //   DepthFactor    is the supporting material specific or bare?
+  //
+  // Coverage is floored at 0.4 rather than 0 so a single well-evidenced
+  // modality still yields a usable score — one verified certificate is
+  // thin, but it is not worthless.
   const rawEvidenceStrength = modules.reduce((sum, m) => sum + m.weight * m.discountedEvidence, 0);
-  const confidenceScore = agreement * bri * (0.7 + 0.3 * sds);
+  const coverageFactor = 0.4 + 0.6 * coverage;
+  const depthFactor = 0.7 + 0.3 * sds;
+  const confidenceScore = agreement * bri * coverageFactor * depthFactor;
   const skillScore = selfRating + confidenceScore * (rawEvidenceStrength * 4 + 1 - selfRating);
 
   const confidenceState: ConfidenceState =
@@ -188,6 +232,6 @@ export function computeSkillConfidence(params: ComputeConfidenceParams): SkillCo
     confidenceScore: Math.round(confidenceScore * 100) / 100,
     confidenceState,
     explainability,
-    breakdown: { selfRating, agreement, bri, sds, rawEvidenceStrength, modules },
+    breakdown: { selfRating, agreement, coverage, bri, sds, rawEvidenceStrength, modules },
   };
 }
