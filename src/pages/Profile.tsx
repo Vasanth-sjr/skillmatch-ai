@@ -6,11 +6,18 @@ import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { CAREER_PATHS, CareerPathKey } from "@/data/careerPaths";
 import { SKILL_POOLS } from "@/data/skillPools";
+import { CERT_ISSUER_LABELS, getIssuer } from "@/data/certificateIssuers";
+import { checkCredentialFormat, manualVerifyUrl } from "@/lib/certificates/certificateValidator";
+import {
+  loadCachedVerifications, verifyCertificate, cacheKey,
+  VerificationResult,
+} from "@/lib/certificates/verifyCertificate";
+import { CertificateVerificationBadge, BadgeState } from "@/components/profile/CertificateVerificationBadge";
 import {
   User, MapPin, Briefcase, GraduationCap, Link2,
   Award, Edit3, Check, X, Plus, Trash2,
   Linkedin, Github, Globe, ChevronDown,
-  FolderOpen, BadgeCheck, ExternalLink,
+  FolderOpen, BadgeCheck, ExternalLink, AlertCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -73,21 +80,10 @@ const DEGREES = [
   "Ph.D", "Diploma", "12th / HSC", "10th / SSLC", "Other",
 ];
 
-const CERT_ISSUERS = [
-  "Coursera", "Google", "AWS", "Microsoft", "LinkedIn Learning",
-  "Udemy", "edX", "NPTEL", "IBM", "Oracle", "Cisco", "Meta",
-  "HackerRank", "freeCodeCamp", "Infosys Springboard",
-  "Simplilearn", "Great Learning", "Other",
-];
-
-const ISSUER_VERIFY: Record<string, string> = {
-  "Coursera":    "https://www.coursera.org/verify/",
-  "Google":      "https://grow.google/certificates/",
-  "AWS":         "https://aws.amazon.com/verification",
-  "Microsoft":   "https://learn.microsoft.com/en-us/certifications/",
-  "HackerRank":  "https://www.hackerrank.com/certificates/",
-  "NPTEL":       "https://nptel.ac.in/LocalChapter/localChapter.html",
-};
+// Issuer list and per-issuer verification behaviour now live in the shared
+// registry at src/data/certificateIssuers.ts, which the server-side
+// verifier reads from too.
+const CERT_ISSUERS = CERT_ISSUER_LABELS;
 
 function genId() { return Math.random().toString(36).slice(2, 9); }
 
@@ -365,7 +361,14 @@ function CertForm({ draft, onChange, saving, onSave, onDelete, onCancel }: {
   onSave: () => void; onDelete: (() => void) | null; onCancel: () => void;
 }) {
   const upd = (k: keyof CertEntry, v: string) => onChange({ ...draft, [k]: v });
-  const verifyUrl = ISSUER_VERIFY[draft.issuer];
+
+  // Instant, offline shape check — runs as the user types so a mistyped or
+  // fabricated code is caught before it's ever saved. This is not proof of
+  // authenticity; the live check against the issuer happens after saving.
+  const format = checkCredentialFormat(draft.issuer, draft.credentialId);
+  const issuer = getIssuer(draft.issuer);
+  const verifyUrl = manualVerifyUrl(draft.issuer, draft.credentialId);
+
   return (
     <div className="border border-[--ag-accent]/40 bg-[--ag-bg] p-4 space-y-3 mt-2">
       <div className="grid sm:grid-cols-2 gap-3">
@@ -382,7 +385,23 @@ function CertForm({ draft, onChange, saving, onSave, onDelete, onCancel }: {
         <div className="space-y-1">
           <Label className="text-xs font-semibold uppercase tracking-wider text-[--ag-muted]">Credential ID</Label>
           <Input value={draft.credentialId} onChange={e => upd("credentialId", e.target.value)} placeholder="e.g. ABCD1234"
-            className="rounded-none border-[--ag-border] bg-[--ag-surface] focus:border-[--ag-accent] text-sm" />
+            className={cn(
+              "rounded-none border-[--ag-border] bg-[--ag-surface] focus:border-[--ag-accent] text-sm",
+              format.status === "bad_format" && "border-[--ag-danger] focus:border-[--ag-danger]",
+            )} />
+          {format.status === "bad_format" && (
+            <p className="text-[11px] text-[--ag-danger] flex items-start gap-1 pt-0.5">
+              <AlertCircle className="h-3 w-3 mt-px shrink-0" /> {format.message}
+            </p>
+          )}
+          {format.status === "ok" && draft.credentialId && issuer?.autoVerify && (
+            <p className="text-[11px] text-[--ag-muted] pt-0.5">
+              Format looks right — we'll verify it with {issuer.label} after you save.
+            </p>
+          )}
+          {format.status === "ok" && draft.credentialId && issuer && !issuer.autoVerify && issuer.manualOnlyReason && (
+            <p className="text-[11px] text-[--ag-muted] pt-0.5">{issuer.manualOnlyReason}.</p>
+          )}
         </div>
         <div className="space-y-1">
           <Label className="text-xs font-semibold uppercase tracking-wider text-[--ag-muted]">Issue Date</Label>
@@ -395,18 +414,19 @@ function CertForm({ draft, onChange, saving, onSave, onDelete, onCancel }: {
             className="rounded-none border-[--ag-border] bg-[--ag-surface] focus:border-[--ag-accent] text-sm" />
         </div>
       </div>
-      {verifyUrl && draft.credentialId && (
-        <div className="flex items-center gap-2 p-2 bg-green-50 border border-green-200">
-          <BadgeCheck className="h-4 w-4 text-green-600 shrink-0" />
-          <a href={`${verifyUrl}${draft.credentialId}`} target="_blank" rel="noreferrer"
-            className="text-xs font-bold text-green-700 hover:underline flex items-center gap-1">
-            Verify on {draft.issuer} <ExternalLink className="h-3 w-3" />
+      {verifyUrl && draft.credentialId && format.status === "ok" && (
+        <div className="flex items-center gap-2 p-2 border border-[--ag-border] bg-[--ag-surface]">
+          <BadgeCheck className="h-4 w-4 text-[--ag-accent] shrink-0" />
+          <a href={verifyUrl} target="_blank" rel="noreferrer"
+            className="text-xs font-bold text-[--ag-accent] hover:underline flex items-center gap-1">
+            Check for yourself on {issuer?.label ?? draft.issuer} <ExternalLink className="h-3 w-3" />
           </a>
         </div>
       )}
       <div className="flex items-center justify-between pt-1">
         <div className="flex gap-2">
-          <Button size="sm" onClick={onSave} disabled={saving || !draft.name.trim() || !draft.issuer}
+          <Button size="sm" onClick={onSave}
+            disabled={saving || !draft.name.trim() || !draft.issuer || format.status === "bad_format"}
             className="rounded-none bg-[--ag-accent] text-white font-bold uppercase tracking-widest text-xs">
             {saving ? "Saving…" : <><Check className="h-3.5 w-3.5 mr-1" />Save</>}
           </Button>
@@ -488,6 +508,10 @@ export default function Profile() {
   const [projDraft, setProjDraft] = useState<ProjectEntry | null>(null);
   const [certDraft, setCertDraft] = useState<CertEntry | null>(null);
 
+  // Certificate verification state, keyed by issuer::credentialId.
+  const [verifications, setVerifications] = useState<Record<string, VerificationResult>>({});
+  const [verifying, setVerifying] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     if (!profile) return;
     setFullName(profile.full_name ?? "");
@@ -503,6 +527,79 @@ export default function Profile() {
     setGithubUrl(profile.github_url ?? "");
     setPortfolioUrl(profile.portfolio_url ?? "");
   }, [profile]);
+
+  // Load whatever verification results are already cached for this user.
+  useEffect(() => {
+    if (!user) return;
+    loadCachedVerifications(user.id).then(setVerifications);
+  }, [user]);
+
+  // Automatic verification: any saved certificate whose result is missing
+  // or stale gets checked in the background. Results are cached in the DB,
+  // so this settles to zero network calls once every credential is known.
+  useEffect(() => {
+    if (!user || certifications.length === 0) return;
+
+    let cancelled = false;
+
+    (async () => {
+      for (const cert of certifications) {
+        if (!cert.issuer || !cert.credentialId.trim()) continue;
+
+        const issuer = getIssuer(cert.issuer);
+        if (!issuer?.autoVerify) continue;
+
+        const key = cacheKey(cert.issuer, cert.credentialId);
+        // verifyCertificate returns the cached value untouched when it's
+        // still fresh, so calling it unconditionally is safe and cheap.
+        const cached = verifications[key];
+
+        setVerifying(prev => new Set(prev).add(key));
+        try {
+          const result = await verifyCertificate(user.id, cert.issuer, cert.credentialId, cached);
+          if (cancelled) return;
+          setVerifications(prev => ({ ...prev, [key]: result }));
+        } catch (err) {
+          console.error("Certificate verification failed:", err);
+        } finally {
+          if (!cancelled) {
+            setVerifying(prev => {
+              const next = new Set(prev);
+              next.delete(key);
+              return next;
+            });
+          }
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, certifications]);
+
+  const recheckCertificate = async (cert: CertEntry) => {
+    if (!user || !cert.issuer || !cert.credentialId.trim()) return;
+    const key = cacheKey(cert.issuer, cert.credentialId);
+
+    setVerifying(prev => new Set(prev).add(key));
+    try {
+      const result = await verifyCertificate(user.id, cert.issuer, cert.credentialId, undefined, true);
+      setVerifications(prev => ({ ...prev, [key]: result }));
+    } catch (err: any) {
+      console.error("Certificate re-check failed:", err);
+      toast({
+        title: "Couldn't re-check",
+        description: String(err?.message ?? err),
+        variant: "destructive",
+      });
+    } finally {
+      setVerifying(prev => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
 
   const careerGoal = profile?.career_goal as CareerPathKey | null;
   const goalPath = careerGoal ? CAREER_PATHS[careerGoal] : null;
@@ -1038,7 +1135,12 @@ export default function Profile() {
                         />
                       );
                     }
-                    const verifyUrl = ISSUER_VERIFY[cert.issuer];
+                    const certIssuer = getIssuer(cert.issuer);
+                    const certKey = cacheKey(cert.issuer, cert.credentialId);
+                    const result = verifications[certKey];
+                    const badgeState: BadgeState = verifying.has(certKey)
+                      ? "checking"
+                      : result?.status ?? (certIssuer?.autoVerify ? "unchecked" : "unsupported");
                     return (
                       <div key={cert.id} className="border-l-2 border-[--ag-accent]/30 pl-4 group py-0.5">
                         <div className="flex items-start justify-between gap-2">
@@ -1049,11 +1151,14 @@ export default function Profile() {
                               {cert.issueDate && <span>Issued {cert.issueDate}</span>}
                               {cert.credentialId && <span>ID: {cert.credentialId}</span>}
                             </div>
-                            {verifyUrl && cert.credentialId && (
-                              <a href={`${verifyUrl}${cert.credentialId}`} target="_blank" rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-xs font-bold text-green-600 hover:underline mt-1">
-                                <BadgeCheck className="h-3 w-3" /> Verify credential <ExternalLink className="h-2.5 w-2.5" />
-                              </a>
+                            {cert.credentialId && (
+                              <CertificateVerificationBadge
+                                state={badgeState}
+                                message={result?.message}
+                                manualUrl={manualVerifyUrl(cert.issuer, cert.credentialId)}
+                                issuerLabel={certIssuer?.label ?? cert.issuer}
+                                onRecheck={certIssuer?.autoVerify ? () => recheckCertificate(cert) : undefined}
+                              />
                             )}
                           </div>
                           <button onClick={() => { setCertDraft({ ...cert }); setEditSection(`cert_${cert.id}`); }}
