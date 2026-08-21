@@ -15,6 +15,7 @@ import {
   loadCandidateSkillEvidence, loadCandidateCertificates,
   CandidateSkillEvidence, CandidateCertificate,
 } from "@/lib/amsce/candidateEvidence";
+import { recordHiringOutcome, HiringOutcome } from "@/lib/amsce/outcomeFeedback";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -140,6 +141,16 @@ export default function CandidateView() {
     } else {
       setApplications(prev => prev.map(a => a.id === appId ? { ...a, status: newStatus } : a));
       toast({ title: `Status → ${newStatus}` });
+
+      // Freeze what AMSCE said at the moment of the decision. Reading the
+      // live scores later would show what the engine thinks now, not what
+      // this employer was actually shown when they decided.
+      //
+      // Fire-and-forget: feedback data is valuable but not worth blocking
+      // a hiring workflow over.
+      if (id && user && ["shortlisted", "rejected", "hired"].includes(newStatus)) {
+        recordHiringOutcome(appId, id, user.id, newStatus as HiringOutcome, skillEvidence);
+      }
     }
     setUpdating(null);
   };

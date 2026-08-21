@@ -13,9 +13,10 @@
 // candidates who simply haven't taken a mock interview yet.
 
 import { useState } from "react";
-import { ShieldCheck, ChevronDown, Award, Info } from "lucide-react";
+import { ShieldCheck, ChevronDown, Award, Info, Clock } from "lucide-react";
 import { CandidateSkillEvidence, CandidateCertificate } from "@/lib/amsce/candidateEvidence";
 import { CAREER_PATHS, CareerPathKey } from "@/data/careerPaths";
+import { oldestAssessment } from "@/lib/amsce/confidenceStaleness";
 import { cn } from "@/lib/utils";
 
 const TRUST_PRESENTATION: Record<CandidateCertificate["trustLevel"], { label: string; classes: string }> = {
@@ -132,6 +133,13 @@ export function VerifiedEvidence({
   const pathLabel = (key: string) =>
     CAREER_PATHS[key as CareerPathKey]?.label ?? key;
 
+  // Scores are cached and only recomputed when the candidate revisits, so
+  // an employer can be reading a months-old assessment. Disclose the age
+  // rather than silently adjusting the number — the evidence timestamps
+  // have already been discounted once, and discounting again by elapsed
+  // time would double-count the same ageing.
+  const staleness = oldestAssessment(skills.map(s => s.lastComputedAt));
+
   return (
     <div className="bg-[--ag-surface] border border-[--ag-border] p-5 space-y-4">
       <div>
@@ -145,6 +153,18 @@ export function VerifiedEvidence({
           a judgement about them.
         </p>
       </div>
+
+      {skills.length > 0 && staleness.level !== "fresh" && (
+        <p className={cn(
+          "text-[11px] flex items-start gap-1.5 px-2 py-1.5 border",
+          staleness.level === "stale"
+            ? "bg-[--ag-warning]/10 border-[--ag-warning]/30 text-[--ag-warning]"
+            : "bg-[--ag-border]/30 border-[--ag-border] text-[--ag-muted]",
+        )}>
+          <Clock className="h-3 w-3 mt-0.5 shrink-0" />
+          Last assessed {staleness.label}. Skills and evidence may have moved on since.
+        </p>
+      )}
 
       {certificates.length > 0 && (
         <div>

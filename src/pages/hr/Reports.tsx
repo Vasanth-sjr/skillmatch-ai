@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { CalibrationPanel } from "@/components/hr/CalibrationPanel";
 import { useNavigate } from "react-router-dom";
 import { DashboardLayout } from "@/components/hr/DashboardLayout";
 import { supabase } from "@/integrations/supabase/client";
@@ -208,6 +209,8 @@ export default function Reports() {
             Candidate fit scores, pipeline overview, and hiring insights
           </p>
         </div>
+
+        <CalibrationPanel employerId={user?.id} />
 
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
