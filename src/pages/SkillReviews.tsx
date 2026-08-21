@@ -16,8 +16,11 @@ import {
 } from "@/lib/amsce/adaptiveConfidenceEngine";
 import { ExperienceEntry, ProjectEntry } from "@/lib/amsce/resumeContextAnalyzer";
 import { loadCertificateEvidence } from "@/lib/certificates/certificateEvidence";
+import { detectVerificationTriggers, VerificationTrigger } from "@/lib/amsce/verificationTrigger";
+import { recordTriggers, markTriggerActed, loadTriggerLog, TriggerLogRow } from "@/lib/amsce/triggerLog";
+import { VerificationPrompts } from "@/components/skills/VerificationPrompts";
 import { cn } from "@/lib/utils";
-import { Star, TrendingUp, AlertCircle, CheckCircle2, RefreshCw, Loader2, ChevronDown, ShieldAlert } from "lucide-react";
+import { Star, TrendingUp, AlertCircle, CheckCircle2, RefreshCw, Loader2, ChevronDown } from "lucide-react";
 
 // ─── Skill areas per career path ─────────────────────────────────────────────
 // 5 categories × 4 skills = 20 assessable skills per path
@@ -370,6 +373,8 @@ export default function SkillReviews() {
 
   const [confidence, setConfidence] = useState<Record<string, SkillConfidenceResult>>({});
   const [computing, setComputing] = useState(false);
+  const [triggers, setTriggers] = useState<VerificationTrigger[]>([]);
+  const [triggerLog, setTriggerLog] = useState<Record<string, TriggerLogRow>>({});
 
   // Stable identity for the certificate list, so adding or verifying a
   // certificate triggers a recompute without the array's changing
@@ -389,6 +394,8 @@ export default function SkillReviews() {
     if (!user) return;
     setLoading(true);
     setConfidence({});
+    setTriggers([]);
+    loadTriggerLog(user.id, selectedPath).then(setTriggerLog);
     loadRatingData(user.id, selectedPath)
       .then(({ current, histories }) => { setRatings(current); setHistories(histories); })
       .catch(err => {
@@ -459,6 +466,12 @@ export default function SkillReviews() {
         for (const r of results) next[r.skill] = r;
         setConfidence(next);
 
+        // Verification Trigger: decide what the user should do about any
+        // skill whose self-rating outruns its evidence.
+        const fired = detectVerificationTriggers(results);
+        setTriggers(fired);
+        recordTriggers(user.id, selectedPath, fired);
+
         const { error } = await persistConfidenceScores(user.id, selectedPath, results);
         if (error) {
           console.error("Failed to persist skill confidence scores:", error);
@@ -524,14 +537,6 @@ export default function SkillReviews() {
 
   // Strengths = rated 4 or 5
   const strengths = allSkills.filter(s => ratings[s] >= 4);
-
-  // AMSCE — skills the user rated highly but with little independent
-  // evidence to back it up yet. This is the invention's core surfaced
-  // output: a self-rating and its calibrated confidence disagreeing.
-  const needsVerification = allSkills.filter(s => {
-    const c = confidence[s];
-    return ratings[s] >= 4 && c && c.confidenceState === "Low";
-  });
 
   const goalPath = CAREER_PATHS[selectedPath];
   const completionPct = Math.round((totalRated / totalSkills) * 100);
@@ -691,27 +696,19 @@ export default function SkillReviews() {
                 </div>
               </div>
 
-              {/* AMSCE — needs verification */}
-              {needsVerification.length > 0 && (
-                <div className="rounded-none bg-[--ag-surface] border border-[--ag-danger]/30 p-4">
-                  <p className="text-xs font-extrabold uppercase tracking-wider text-[--ag-danger] mb-1 flex items-center gap-2">
-                    <ShieldAlert className="h-3.5 w-3.5" /> Low Evidence, High Rating
-                  </p>
-                  <p className="text-[11px] text-[--ag-muted] mb-3">
-                    You rated these highly, but AMSCE hasn't found much supporting evidence yet in your profile, interviews, or learning activity.
-                  </p>
-                  <div className="space-y-1.5">
-                    {needsVerification.map(s => (
-                      <div key={s} className="flex items-center justify-between">
-                        <span className="text-xs text-[--ag-text]">{s}</span>
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 border bg-[--ag-danger]/10 border-[--ag-danger]/30 text-[--ag-danger]">
-                          Low confidence
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* AMSCE — Verification Trigger */}
+              <VerificationPrompts
+                triggers={triggers}
+                log={triggerLog}
+                onAct={(skill, module) => {
+                  if (!user) return;
+                  markTriggerActed(user.id, selectedPath, skill, module);
+                  setTriggerLog(prev => ({
+                    ...prev,
+                    [skill]: { skill, reason: "", actedAt: new Date().toISOString(), suggestedModule: module },
+                  }));
+                }}
+              />
 
               {/* Strengths */}
               {strengths.length > 0 && (
