@@ -13,11 +13,22 @@ import {
   VerificationResult,
 } from "@/lib/certificates/verifyCertificate";
 import { CertificateVerificationBadge, BadgeState } from "@/components/profile/CertificateVerificationBadge";
+import { CertificateUpload } from "@/components/profile/CertificateUpload";
+import {
+  extractPdfText, analyzeCertificateDocument, validateCertificateFile,
+  DocumentAnalysis,
+} from "@/lib/certificates/certificateDocument";
+import {
+  uploadCertificateFile, saveDocumentAnalysis, loadDocumentAnalyses,
+  deleteCertificateFile, removeDocumentAnalysis, getCertificateSignedUrl,
+  StoredCertificateDocument,
+} from "@/lib/certificates/certificateStorage";
+import { assessCredentialTrust } from "@/lib/certificates/credentialTrust";
 import {
   User, MapPin, Briefcase, GraduationCap, Link2,
   Award, Edit3, Check, X, Plus, Trash2,
   Linkedin, Github, Globe, ChevronDown,
-  FolderOpen, BadgeCheck, ExternalLink, AlertCircle,
+  FolderOpen, BadgeCheck, ExternalLink, AlertCircle, FileText,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -63,6 +74,9 @@ interface CertEntry {
   credentialId: string;
   issueDate: string;
   expiryDate: string;
+  /** Storage path of the uploaded certificate document, if any. */
+  filePath?: string;
+  fileName?: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -123,6 +137,23 @@ function normalizeProj(raw: any[]): ProjectEntry[] {
   }));
 }
 
+/** Re-hydrates a persisted document check into the shape the form renders,
+ *  so re-opening a saved certificate shows what we found last time rather
+ *  than a blank slate. */
+function storedAsAnalysis(stored: StoredCertificateDocument | undefined): DocumentAnalysis | null {
+  if (!stored) return null;
+  return {
+    readable: stored.consistency !== "unreadable",
+    foundIssuerUrl: Boolean(stored.extractedId),
+    extractedCredentialId: stored.extractedId,
+    matchesEnteredId: null,
+    holderNameMatches: stored.nameMatched,
+    expectedTermsFound: [],
+    consistency: stored.consistency,
+    notes: stored.notes,
+  };
+}
+
 function normalizeCert(raw: any[]): CertEntry[] {
   return (raw ?? []).map((c: any, i: number) => ({
     id: c.id ?? String(i),
@@ -131,6 +162,8 @@ function normalizeCert(raw: any[]): CertEntry[] {
     credentialId: c.credentialId ?? "",
     issueDate: c.issueDate ?? "",
     expiryDate: c.expiryDate ?? "",
+    filePath: c.filePath ?? undefined,
+    fileName: c.fileName ?? undefined,
   }));
 }
 
@@ -356,9 +389,18 @@ function ProjectForm({ draft, onChange, saving, onSave, onDelete, onCancel }: {
 
 // ─── Certification form ───────────────────────────────────────────────────────
 
-function CertForm({ draft, onChange, saving, onSave, onDelete, onCancel }: {
+function CertForm({
+  draft, onChange, saving, onSave, onDelete, onCancel,
+  profileName, pendingFile, docAnalysis, analyzing, onFileSelect, onFileRemove,
+}: {
   draft: CertEntry; onChange: (d: CertEntry) => void; saving: boolean;
   onSave: () => void; onDelete: (() => void) | null; onCancel: () => void;
+  profileName: string | null;
+  pendingFile: File | null;
+  docAnalysis: DocumentAnalysis | null;
+  analyzing: boolean;
+  onFileSelect: (file: File) => void;
+  onFileRemove: () => void;
 }) {
   const upd = (k: keyof CertEntry, v: string) => onChange({ ...draft, [k]: v });
 
@@ -414,6 +456,21 @@ function CertForm({ draft, onChange, saving, onSave, onDelete, onCancel }: {
             className="rounded-none border-[--ag-border] bg-[--ag-surface] focus:border-[--ag-accent] text-sm" />
         </div>
       </div>
+      {/* Certificate document — the printed verify URL is often the only
+          handle we get on issuers that can't be checked server-side. */}
+      <div className="space-y-1">
+        <Label className="text-xs font-semibold uppercase tracking-wider text-[--ag-muted]">
+          Certificate File {issuer && !issuer.autoVerify && <span className="text-[--ag-accent]">— recommended</span>}
+        </Label>
+        <CertificateUpload
+          fileName={pendingFile?.name ?? draft.fileName ?? null}
+          analysis={docAnalysis}
+          busy={analyzing}
+          onSelect={onFileSelect}
+          onRemove={onFileRemove}
+        />
+      </div>
+
       {verifyUrl && draft.credentialId && format.status === "ok" && (
         <div className="flex items-center gap-2 p-2 border border-[--ag-border] bg-[--ag-surface]">
           <BadgeCheck className="h-4 w-4 text-[--ag-accent] shrink-0" />
@@ -512,6 +569,14 @@ export default function Profile() {
   const [verifications, setVerifications] = useState<Record<string, VerificationResult>>({});
   const [verifying, setVerifying] = useState<Set<string>>(new Set());
 
+  // Certificate document state. `pendingFile` holds a chosen file until the
+  // certificate is saved — we only upload once the entry is committed, so a
+  // cancelled edit never leaves an orphan in storage.
+  const [certDocs, setCertDocs] = useState<Record<string, StoredCertificateDocument>>({});
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingAnalysis, setPendingAnalysis] = useState<DocumentAnalysis | null>(null);
+  const [analyzingDoc, setAnalyzingDoc] = useState(false);
+
   useEffect(() => {
     if (!profile) return;
     setFullName(profile.full_name ?? "");
@@ -532,7 +597,127 @@ export default function Profile() {
   useEffect(() => {
     if (!user) return;
     loadCachedVerifications(user.id).then(setVerifications);
+    loadDocumentAnalyses(user.id).then(setCertDocs);
   }, [user]);
+
+  // Reading and analysing the certificate happens the moment a file is
+  // chosen — before saving — so the user sees whether it matches while
+  // they can still correct the details. Nothing is uploaded yet.
+  const handleCertFileSelect = async (file: File) => {
+    if (!certDraft) return;
+
+    const problem = validateCertificateFile(file);
+    if (problem) {
+      toast({ title: "Can't use that file", description: problem, variant: "destructive" });
+      return;
+    }
+
+    setPendingFile(file);
+    setAnalyzingDoc(true);
+    try {
+      // Only PDFs carry extractable text. An image upload is still stored
+      // and shown, but we say plainly that we couldn't read it rather
+      // than pretending an OCR result we don't have.
+      const text = file.type === "application/pdf" ? await extractPdfText(file) : "";
+      const analysis = analyzeCertificateDocument(
+        text, certDraft.issuer, certDraft.credentialId, fullName || null,
+      );
+      setPendingAnalysis(analysis);
+
+      // If the document carries an ID and the field is empty, fill it in —
+      // that's the main convenience win of uploading.
+      if (analysis.extractedCredentialId && !certDraft.credentialId.trim()) {
+        setCertDraft(prev => prev ? { ...prev, credentialId: analysis.extractedCredentialId! } : prev);
+        toast({
+          title: "Credential ID found",
+          description: `Read ${analysis.extractedCredentialId} off the certificate.`,
+        });
+      }
+    } catch (err: any) {
+      console.error("Certificate document analysis failed:", err);
+      setPendingAnalysis(null);
+      toast({
+        title: "Couldn't read that file",
+        description: String(err?.message ?? err),
+        variant: "destructive",
+      });
+    } finally {
+      setAnalyzingDoc(false);
+    }
+  };
+
+  const handleCertFileRemove = async () => {
+    setPendingFile(null);
+    setPendingAnalysis(null);
+    if (!certDraft) return;
+
+    // Clearing a file that was already saved must remove it from storage
+    // too, not just detach it from the entry.
+    if (certDraft.filePath && user) {
+      await deleteCertificateFile(certDraft.filePath);
+      await removeDocumentAnalysis(user.id, certDraft.id);
+      setCertDocs(prev => {
+        const next = { ...prev };
+        delete next[certDraft.id];
+        return next;
+      });
+    }
+    setCertDraft(prev => prev ? { ...prev, filePath: undefined, fileName: undefined } : prev);
+  };
+
+  /** Uploads any pending file and records its analysis. Returns the entry
+   *  with storage details attached, ready to persist into the profile. */
+  const commitCertDocument = async (cert: CertEntry): Promise<CertEntry> => {
+    if (!user || !pendingFile) return cert;
+
+    const { path, error } = await uploadCertificateFile(user.id, cert.id, pendingFile);
+    if (error || !path) {
+      toast({
+        title: "Certificate upload failed",
+        description: error ?? "Unknown error",
+        variant: "destructive",
+      });
+      return cert;
+    }
+
+    if (pendingAnalysis) {
+      const saveError = await saveDocumentAnalysis(
+        user.id, cert.id, cert.issuer, path, pendingFile.name, pendingAnalysis,
+      );
+      if (saveError) {
+        toast({ title: "Couldn't save document check", description: saveError, variant: "destructive" });
+      } else {
+        setCertDocs(prev => ({
+          ...prev,
+          [cert.id]: {
+            certificateId: cert.id,
+            issuer: cert.issuer,
+            storagePath: path,
+            fileName: pendingFile.name,
+            consistency: pendingAnalysis.consistency,
+            extractedId: pendingAnalysis.extractedCredentialId,
+            nameMatched: pendingAnalysis.holderNameMatches,
+            notes: pendingAnalysis.notes,
+            analyzedAt: new Date().toISOString(),
+          },
+        }));
+      }
+    }
+
+    return { ...cert, filePath: path, fileName: pendingFile.name };
+  };
+
+  const clearCertDraftState = () => {
+    setCertDraft(null);
+    setPendingFile(null);
+    setPendingAnalysis(null);
+  };
+
+  const viewCertificate = async (storagePath: string) => {
+    const url = await getCertificateSignedUrl(storagePath);
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+    else toast({ title: "Couldn't open the certificate", variant: "destructive" });
+  };
 
   // Automatic verification: any saved certificate whose result is missing
   // or stale gets checked in the background. Results are cached in the DB,
@@ -1121,17 +1306,26 @@ export default function Profile() {
                     if (isEditing && certDraft) {
                       return (
                         <CertForm key={cert.id} draft={certDraft} onChange={setCertDraft} saving={saving}
+                          profileName={fullName || null}
+                          pendingFile={pendingFile}
+                          docAnalysis={pendingAnalysis ?? storedAsAnalysis(certDocs[cert.id])}
+                          analyzing={analyzingDoc}
+                          onFileSelect={handleCertFileSelect}
+                          onFileRemove={handleCertFileRemove}
                           onSave={async () => {
-                            const updated = certifications.map(c => c.id === certDraft.id ? certDraft : c);
+                            const withDoc = await commitCertDocument(certDraft);
+                            const updated = certifications.map(c => c.id === withDoc.id ? withDoc : c);
                             await save({ certifications: updated });
-                            setCertifications(updated); setCertDraft(null);
+                            setCertifications(updated); clearCertDraftState();
                           }}
                           onDelete={async () => {
+                            if (cert.filePath) await deleteCertificateFile(cert.filePath);
+                            if (user) await removeDocumentAnalysis(user.id, cert.id);
                             const updated = certifications.filter(c => c.id !== cert.id);
                             await save({ certifications: updated });
-                            setCertifications(updated); setCertDraft(null);
+                            setCertifications(updated); clearCertDraftState();
                           }}
-                          onCancel={() => { setEditSection(null); setCertDraft(null); }}
+                          onCancel={() => { setEditSection(null); clearCertDraftState(); }}
                         />
                       );
                     }
@@ -1160,6 +1354,38 @@ export default function Profile() {
                                 onRecheck={certIssuer?.autoVerify ? () => recheckCertificate(cert) : undefined}
                               />
                             )}
+
+                            {/* Combined trust level — what the issuer said AND
+                                what the uploaded document showed. */}
+                            {(result || certDocs[cert.id]) && (() => {
+                              const trust = assessCredentialTrust(
+                                result?.status ?? null,
+                                certDocs[cert.id]?.consistency ?? null,
+                              );
+                              return (
+                                <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+                                  <span className={cn(
+                                    "inline-block px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wider border",
+                                    trust.level === "verified"     ? "bg-[--ag-success]/10 border-[--ag-success]/40 text-[--ag-success]" :
+                                    trust.level === "corroborated" ? "bg-[--ag-accent]/10  border-[--ag-accent]/40  text-[--ag-accent]"  :
+                                    trust.level === "disputed"     ? "bg-[--ag-danger]/10  border-[--ag-danger]/40  text-[--ag-danger]"  :
+                                                                     "bg-[--ag-border]/40  border-[--ag-border]     text-[--ag-muted]",
+                                  )}>
+                                    {trust.label}
+                                  </span>
+                                  <span className="text-[11px] text-[--ag-muted]">{trust.detail}</span>
+                                </div>
+                              );
+                            })()}
+
+                            {cert.filePath && (
+                              <button
+                                onClick={() => viewCertificate(cert.filePath!)}
+                                className="mt-1.5 inline-flex items-center gap-1 text-xs text-[--ag-muted] hover:text-[--ag-accent] transition-colors"
+                              >
+                                <FileText className="h-3 w-3" /> {cert.fileName ?? "View certificate"}
+                              </button>
+                            )}
                           </div>
                           <button onClick={() => { setCertDraft({ ...cert }); setEditSection(`cert_${cert.id}`); }}
                             className="opacity-0 group-hover:opacity-100 text-[--ag-muted] hover:text-[--ag-accent] transition-all shrink-0">
@@ -1172,13 +1398,20 @@ export default function Profile() {
 
                   {editSection === "cert_new" && certDraft ? (
                     <CertForm draft={certDraft} onChange={setCertDraft} saving={saving}
+                      profileName={fullName || null}
+                      pendingFile={pendingFile}
+                      docAnalysis={pendingAnalysis}
+                      analyzing={analyzingDoc}
+                      onFileSelect={handleCertFileSelect}
+                      onFileRemove={handleCertFileRemove}
                       onSave={async () => {
-                        const updated = [...certifications, certDraft];
+                        const withDoc = await commitCertDocument(certDraft);
+                        const updated = [...certifications, withDoc];
                         await save({ certifications: updated });
-                        setCertifications(updated); setCertDraft(null);
+                        setCertifications(updated); clearCertDraftState();
                       }}
                       onDelete={null}
-                      onCancel={() => { setEditSection(null); setCertDraft(null); }}
+                      onCancel={() => { setEditSection(null); clearCertDraftState(); }}
                     />
                   ) : (
                     <button

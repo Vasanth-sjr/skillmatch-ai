@@ -72,6 +72,27 @@ export interface AutoVerifyConfig {
   trusts404: boolean;
 }
 
+/**
+ * How this issuer's credential appears on the certificate document itself.
+ *
+ * Nearly every provider prints its verification URL on the PDF, which lets
+ * us pull the credential ID straight out of an uploaded file instead of
+ * asking the user to find and retype it. This matters most for the issuers
+ * we CANNOT check server-side (Coursera, Udemy, NPTEL) — the document is
+ * the only handle we get on them.
+ *
+ * To be explicit about what this is worth: finding a printed URL proves
+ * the document says what it should, NOT that the document is genuine. A
+ * PDF can be edited. Document analysis produces corroboration, never
+ * verification — see certificateDocument.ts.
+ */
+export interface DocumentSignature {
+  /** Patterns locating the verify URL in extracted text; group 1 = credential ID. */
+  urlPatterns: RegExp[];
+  /** Lowercase terms a genuine certificate from this issuer should contain. */
+  expectedTerms: string[];
+}
+
 export interface CertificateIssuer {
   key: IssuerKey;
   label: string;
@@ -83,6 +104,13 @@ export interface CertificateIssuer {
   verifyUrl: ((id: string) => string) | null;
   /** Server-side automated check, when the provider permits one. */
   autoVerify: AutoVerifyConfig | null;
+  /**
+   * How to read this issuer's credential off an uploaded certificate.
+   * Omitted for issuers whose printed certificate layout we haven't
+   * confirmed — absence means "we won't guess", not "uploads are useless":
+   * the file is still stored and the name/term cross-checks still run.
+   */
+  document?: DocumentSignature | null;
   /** Why automation is unavailable, surfaced in the UI when autoVerify is null. */
   manualOnlyReason?: string;
 }
@@ -115,6 +143,13 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     autoVerify: null,
     manualOnlyReason:
       "Coursera shows verification results only in the browser, so it can't be confirmed automatically",
+    document: {
+      urlPatterns: [
+        /coursera\.org\/account\/accomplishments\/(?:verify|professional-cert|specialization)\/([A-Z0-9]{8,24})/i,
+        /coursera\.org\/verify\/(?:professional-cert\/|specialization\/)?([A-Z0-9]{8,24})/i,
+      ],
+      expectedTerms: ["coursera", "has successfully completed", "course certificate"],
+    },
   },
   {
     key: "Google",
@@ -126,6 +161,13 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     autoVerify: null,
     manualOnlyReason:
       "Google certificates verify through Coursera, which shows results only in the browser",
+    document: {
+      urlPatterns: [
+        /coursera\.org\/account\/accomplishments\/(?:verify|professional-cert|specialization)\/([A-Z0-9]{8,24})/i,
+        /coursera\.org\/verify\/(?:professional-cert\/|specialization\/)?([A-Z0-9]{8,24})/i,
+      ],
+      expectedTerms: ["coursera", "google", "has successfully completed"],
+    },
   },
   {
     key: "Udemy",
@@ -138,6 +180,13 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     // challenge (403 "just a moment"), so no automated check is possible.
     autoVerify: null,
     manualOnlyReason: "Udemy blocks automated verification requests",
+    document: {
+      urlPatterns: [
+        /ude\.my\/(UC-[A-Za-z0-9-]{8,60})/i,
+        /udemy\.com\/certificate\/(UC-[A-Za-z0-9-]{8,60})/i,
+      ],
+      expectedTerms: ["udemy", "certificate of completion", "instructors"],
+    },
   },
   {
     key: "freeCodeCamp",
@@ -158,6 +207,10 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     autoVerify: null,
     manualOnlyReason:
       "freeCodeCamp profiles are private by default, so a missing page doesn't prove a certificate is fake",
+    document: {
+      urlPatterns: [/freecodecamp\.org\/certification\/([^/\s]+)\/[^/\s]+/i],
+      expectedTerms: ["freecodecamp", "developer certification"],
+    },
   },
   {
     key: "HackerRank",
@@ -173,6 +226,10 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
       validMarkers: ["hackerrank"],
       trusts404: true,
     },
+    document: {
+      urlPatterns: [/hackerrank\.com\/certificates\/([A-Za-z0-9]{8,40})/i],
+      expectedTerms: ["hackerrank", "certificate of accomplishment"],
+    },
   },
   {
     key: "NPTEL",
@@ -185,6 +242,16 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     // through their portal with additional inputs, so this is manual-only.
     autoVerify: null,
     manualOnlyReason: "NPTEL verifies through its course portal rather than a direct credential URL",
+    document: {
+      // NPTEL certificates print the roll number and a verification URL
+      // whose host has changed across cohorts, so match the roll number
+      // itself as well as the URL forms seen in circulation.
+      urlPatterns: [
+        /nptel\.ac\.in\/[^\s]*?\b(NPTEL[0-9A-Z]{6,30})\b/i,
+        /\b(NPTEL[0-9]{2}[A-Z]{2}[0-9A-Z]{4,24})\b/i,
+      ],
+      expectedTerms: ["nptel", "indian institute of technology", "online certification"],
+    },
   },
   {
     key: "edX",
@@ -199,6 +266,10 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
       notFoundMarkers: ["page not found | edx"],
       validMarkers: ["successfully completed", "verified certificate"],
       trusts404: true,
+    },
+    document: {
+      urlPatterns: [/edx\.org\/certificates\/([a-f0-9]{16,64})/i],
+      expectedTerms: ["edx", "successfully completed", "verified certificate"],
     },
   },
   {
@@ -246,6 +317,10 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
       validMarkers: ['property="og:title"'],
       trusts404: false,
     },
+    document: {
+      urlPatterns: [/credly\.com\/badges\/([a-f0-9-]{16,60})/i],
+      expectedTerms: ["credly", "issued by", "badge"],
+    },
   },
   {
     key: "Oracle",
@@ -271,6 +346,10 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
       notFoundMarkers: [],
       validMarkers: ['property="og:title"'],
       trusts404: false,
+    },
+    document: {
+      urlPatterns: [/credly\.com\/badges\/([a-f0-9-]{16,60})/i],
+      expectedTerms: ["credly", "issued by", "badge"],
     },
   },
   {
