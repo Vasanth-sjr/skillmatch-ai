@@ -10,6 +10,11 @@ import {
   MapPin, Mail, CheckCircle2, ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { VerifiedEvidence } from "@/components/hr/VerifiedEvidence";
+import {
+  loadCandidateSkillEvidence, loadCandidateCertificates,
+  CandidateSkillEvidence, CandidateCertificate,
+} from "@/lib/amsce/candidateEvidence";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -27,6 +32,7 @@ interface CandidateProfile {
   linkedin_url: string | null;
   github_url: string | null;
   portfolio_url: string | null;
+  certifications: any[];
 }
 
 interface ApplicationRow {
@@ -79,6 +85,8 @@ export default function CandidateView() {
   const [applications, setApplications] = useState<ApplicationRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState<string | null>(null);
+  const [skillEvidence, setSkillEvidence] = useState<CandidateSkillEvidence[]>([]);
+  const [certificates, setCertificates] = useState<CandidateCertificate[]>([]);
 
   useEffect(() => {
     if (!id || !user) return;
@@ -87,7 +95,7 @@ export default function CandidateView() {
       const [{ data: profile }, { data: apps }] = await Promise.all([
         (supabase as any)
           .from("profiles")
-          .select("id, full_name, email, headline, bio, location, career_goal, skills, experience, education, linkedin_url, github_url, portfolio_url")
+          .select("id, full_name, email, headline, bio, location, career_goal, skills, experience, education, linkedin_url, github_url, portfolio_url, certifications")
           .eq("id", id)
           .single(),
 
@@ -98,7 +106,17 @@ export default function CandidateView() {
           .order("applied_at", { ascending: false }),
       ]);
 
-      if (profile) setCandidate(profile);
+      if (profile) {
+        setCandidate(profile);
+        // AMSCE evidence is loaded after the profile because the
+        // certificate join needs the profile's certifications array.
+        const [evidence, certs] = await Promise.all([
+          loadCandidateSkillEvidence(id),
+          loadCandidateCertificates(id, profile.certifications ?? []),
+        ]);
+        setSkillEvidence(evidence);
+        setCertificates(certs);
+      }
 
       // Only show applications for this employer's jobs
       if (apps) {
@@ -214,6 +232,8 @@ export default function CandidateView() {
         <div className="grid lg:grid-cols-3 gap-6">
           {/* Left column: Skills + Bio */}
           <div className="space-y-5">
+
+            <VerifiedEvidence skills={skillEvidence} certificates={certificates} />
 
             {/* Skills */}
             {candidate.skills?.length > 0 && (

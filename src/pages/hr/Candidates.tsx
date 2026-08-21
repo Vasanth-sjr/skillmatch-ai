@@ -7,8 +7,11 @@ import { useToast } from "@/hooks/use-toast";
 import { CAREER_PATHS, CareerPathKey } from "@/data/careerPaths";
 import { calcFitScore, getFitLabel } from "@/lib/fitScore";
 import { Input } from "@/components/ui/input";
-import { Users, Search, ChevronDown, ExternalLink, ArrowUpDown } from "lucide-react";
+import { Users, Search, ChevronDown, ExternalLink, ArrowUpDown, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  loadCandidateEvidenceSummaries, CandidateEvidenceSummary,
+} from "@/lib/amsce/candidateEvidence";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -129,7 +132,17 @@ export default function Candidates() {
     setLoading(false);
   };
 
+  const [evidenceSummaries, setEvidenceSummaries] = useState<Record<string, CandidateEvidenceSummary>>({});
+
   useEffect(() => { fetchData(); }, [user]);
+
+  // Batched after the applicant list arrives — one query pair for every
+  // candidate on screen rather than one per row.
+  useEffect(() => {
+    const ids = applicants.map((a: any) => a.applicant?.id).filter(Boolean);
+    if (ids.length === 0) return;
+    loadCandidateEvidenceSummaries(ids).then(setEvidenceSummaries);
+  }, [applicants]);
 
   // Auto-enable sort by score when a specific job is selected
   useEffect(() => {
@@ -338,6 +351,21 @@ export default function Candidates() {
                           <p className="font-bold text-[--ag-text]">{p?.full_name ?? "Unknown"}</p>
                           <p className="text-xs text-[--ag-muted] font-['JetBrains_Mono']">{p?.email ?? ""}</p>
                         </div>
+                        {(() => {
+                          const ev = p?.id ? evidenceSummaries[p.id] : undefined;
+                          if (!ev || (ev.corroboratedSkills === 0 && ev.verifiedCertificates === 0)) return null;
+                          return (
+                            <span
+                              className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 border bg-[--ag-success]/10 border-[--ag-success]/40 text-[--ag-success]"
+                              title="Independently corroborated by SkillMatch"
+                            >
+                              <ShieldCheck className="h-3 w-3" />
+                              {ev.verifiedCertificates > 0 && `${ev.verifiedCertificates} verified`}
+                              {ev.verifiedCertificates > 0 && ev.corroboratedSkills > 0 && " · "}
+                              {ev.corroboratedSkills > 0 && `${ev.corroboratedSkills} evidenced`}
+                            </span>
+                          );
+                        })()}
                         <span className={cn("ml-auto text-xs font-bold px-2.5 py-1 border", STATUS_STYLES[app.status as Status] ?? "")}>
                           {app.status}
                         </span>
