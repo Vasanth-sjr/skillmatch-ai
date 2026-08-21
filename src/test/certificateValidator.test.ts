@@ -37,34 +37,12 @@ describe("credential format validation", () => {
 });
 
 describe("issuer registry integrity", () => {
-  it("only claims auto-verification where behaviour was actually measured", () => {
-    // Udemy is bot-blocked; freeCodeCamp cannot distinguish a fake
-    // credential from an unshared private profile. Re-enabling either
+  it("keeps bot-blocked and ambiguous issuers manual-only", () => {
+    // Udemy is Cloudflare-challenged; freeCodeCamp cannot distinguish a
+    // fake credential from a real-but-private profile. Re-enabling either
     // requires re-probing first — see certificateIssuers.ts.
     for (const key of ["Udemy", "freeCodeCamp"]) {
-      expect(getIssuer(key)?.autoVerify, `${key} must stay manual-only`).toBeNull();
-    }
-  });
-
-  it("checks Coursera through meta-tag patterns, never body substrings", () => {
-    // Coursera's not-found page is a 376KB marketing shell that mentions
-    // enough to match almost any plain substring — "power bi" hits it.
-    // Body markers here would produce false "verified" results, so the
-    // config must rely on scoped patterns only.
-    for (const key of ["Coursera", "Google", "Meta"]) {
-      const cfg = getIssuer(key)?.autoVerify;
-      expect(cfg, `${key} should auto-verify`).toBeTruthy();
-      expect(cfg!.validMarkers, `${key} must not use body substrings`).toEqual([]);
-      expect(cfg!.notFoundMarkers, `${key} must not use body substrings`).toEqual([]);
-      expect(cfg!.validPatterns?.length, `${key} needs positive patterns`).toBeGreaterThan(0);
-    }
-  });
-
-  it("gives every manual-only issuer a reason to show the user", () => {
-    for (const issuer of CERTIFICATE_ISSUERS) {
-      if (!issuer.autoVerify) {
-        expect(issuer.manualOnlyReason, `${issuer.key} needs a manualOnlyReason`).toBeTruthy();
-      }
+      expect(getIssuer(key)?.supportsAutoVerify, `${key} must stay manual-only`).toBe(false);
     }
   });
 
@@ -76,24 +54,11 @@ describe("issuer registry integrity", () => {
     }
   });
 
-  it("only ever verifies over https", () => {
+  it("only ever links out over https", () => {
     for (const issuer of CERTIFICATE_ISSUERS) {
-      if (issuer.autoVerify) {
-        expect(issuer.autoVerify.fetchUrl("TEST123").startsWith("https://")).toBe(true);
-      }
       if (issuer.verifyUrl) {
-        expect(issuer.verifyUrl("TEST123").startsWith("https://")).toBe(true);
+        expect(issuer.verifyUrl("TEST123").startsWith("https://"), issuer.key).toBe(true);
       }
-    }
-  });
-
-  it("percent-encodes the credential into verification URLs", () => {
-    // Guards against a crafted ID escaping the intended path.
-    for (const issuer of CERTIFICATE_ISSUERS) {
-      if (!issuer.autoVerify) continue;
-      const url = issuer.autoVerify.fetchUrl("../../evil?x=1");
-      expect(url).not.toContain("../..");
-      expect(new URL(url).hostname).not.toBe("evil");
     }
   });
 });

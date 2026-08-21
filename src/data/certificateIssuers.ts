@@ -6,8 +6,8 @@
 //
 // None of these providers expose a public credential-verification API.
 // Their "verify" pages are HTML pages intended for human readers. So
-// `autoVerify` works by fetching that page server-side and looking for
-// the markers a provider renders when a credential does not exist.
+// automated verification works by fetching that page server-side and
+// looking for the markers a provider renders when a credential is absent.
 // That means:
 //
 //   1. It is inherently fragile — a site redesign can change the markers.
@@ -27,7 +27,7 @@
 // sample credentials.
 //
 // ── MEASURED BEHAVIOUR (probed 2026-08-21, bogus credential IDs) ────────
-// These `autoVerify` settings are not guesses; each was checked against
+// These settings are not guesses; each was checked against
 // the live endpoint. Re-probe before changing any of them.
 //
 //   HackerRank    404 for unknown            → auto-verify works
@@ -67,28 +67,13 @@ export type IssuerKey =
   | "HackerRank" | "freeCodeCamp" | "Infosys Springboard"
   | "Simplilearn" | "Great Learning" | "Other";
 
-export interface AutoVerifyConfig {
-  /** URL the server fetches to determine whether the credential exists. */
-  fetchUrl: (id: string) => string;
-  /** Lowercased substrings that indicate the credential does NOT exist. */
-  notFoundMarkers: string[];
-  /** Lowercased substrings that positively confirm a real credential page. */
-  validMarkers: string[];
-  /**
-   * Regexes run against the RAW html, for issuers where the signal lives
-   * in a specific element rather than anywhere in the body.
-   *
-   * Coursera is the reason these exist: its 376KB marketing shell mentions
-   * enough that a plain substring like "power bi" matches the not-found
-   * page too. Only the og: meta tags actually distinguish a real
-   * credential, so the check has to be scoped to them.
-   */
-  validPatterns?: RegExp[];
-  /** Regexes on raw html that positively indicate no such credential. */
-  notFoundPatterns?: RegExp[];
-  /** True when the provider reliably 404s for unknown credentials. */
-  trusts404: boolean;
-}
+// NOTE: the details of HOW each issuer is probed (fetch URL, content
+// markers, patterns) live in api/verify-certificate.ts, not here. That
+// function must run with no cross-directory imports — see the comment at
+// the top of it — and the client never needed those details anyway: it
+// only asks WHETHER an issuer can be checked automatically, via
+// `supportsAutoVerify` below. src/test/verifyTargets.test.ts asserts the
+// two files agree about which issuers those are.
 
 /**
  * How this issuer's credential appears on the certificate document itself.
@@ -120,8 +105,8 @@ export interface CertificateIssuer {
   formatHint: string;
   /** Official page a human can open to confirm the credential themselves. */
   verifyUrl: ((id: string) => string) | null;
-  /** Server-side automated check, when the provider permits one. */
-  autoVerify: AutoVerifyConfig | null;
+  /** Whether api/verify-certificate.ts can check this issuer for us. */
+  supportsAutoVerify: boolean;
   /**
    * How to read this issuer's credential off an uploaded certificate.
    * Omitted for issuers whose printed certificate layout we haven't
@@ -129,21 +114,9 @@ export interface CertificateIssuer {
    * the file is still stored and the name/term cross-checks still run.
    */
   document?: DocumentSignature | null;
-  /** Why automation is unavailable, surfaced in the UI when autoVerify is null. */
+  /** Why automation is unavailable, shown when supportsAutoVerify is false. */
   manualOnlyReason?: string;
 }
-
-// Markers that mean "this page is a bot challenge, not an answer" — checked
-// before any not-found marker so a challenge can never read as "invalid".
-export const CHALLENGE_MARKERS = [
-  "just a moment",
-  "checking your browser",
-  "enable javascript and cookies",
-  "cf-browser-verification",
-  "captcha",
-  "access denied",
-  "unusual traffic",
-];
 
 export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
   {
@@ -164,22 +137,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     // Body substrings are NOT usable here: the marketing shell mentions
     // enough that even "power bi" matches the not-found page. The check
     // must be scoped to the meta tags, hence the pattern form.
-    autoVerify: {
-      fetchUrl: id => `https://www.coursera.org/verify/${encodeURIComponent(id)}`,
-      notFoundMarkers: [],
-      validMarkers: [],
-      validPatterns: [
-        /<meta[^>]+property=["']og:title["'][^>]+content=["'][^"']*?(?:completion|specialization|professional)\s+certificate\s+for/i,
-        /<meta[^>]+property=["']og:description["'][^>]+content=["'][^"']*?this certificate verifies/i,
-      ],
-      notFoundPatterns: [
-        // The generic marketing og:title, which only the not-found page
-        // serves. Checked after the positive patterns, so a real page can
-        // never be denied by it.
-        /<meta[^>]+property=["']og:title["'][^>]+content=["']Coursera\s*(?:\||&#x7c;)/i,
-      ],
-      trusts404: true,
-    },
+    supportsAutoVerify: true,
     document: {
       urlPatterns: [
         /coursera\.org\/account\/accomplishments\/(?:verify|professional-cert|specialization)\/([A-Z0-9]{8,24})/i,
@@ -197,19 +155,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     verifyUrl: id => `https://www.coursera.org/verify/${encodeURIComponent(id)}`,
     // Same mechanism as Coursera — Google's career certificates are issued
     // and verified through it.
-    autoVerify: {
-      fetchUrl: id => `https://www.coursera.org/verify/${encodeURIComponent(id)}`,
-      notFoundMarkers: [],
-      validMarkers: [],
-      validPatterns: [
-        /<meta[^>]+property=["']og:title["'][^>]+content=["'][^"']*?(?:completion|specialization|professional)\s+certificate\s+for/i,
-        /<meta[^>]+property=["']og:description["'][^>]+content=["'][^"']*?this certificate verifies/i,
-      ],
-      notFoundPatterns: [
-        /<meta[^>]+property=["']og:title["'][^>]+content=["']Coursera\s*(?:\||&#x7c;)/i,
-      ],
-      trusts404: true,
-    },
+    supportsAutoVerify: true,
     document: {
       urlPatterns: [
         /coursera\.org\/account\/accomplishments\/(?:verify|professional-cert|specialization)\/([A-Z0-9]{8,24})/i,
@@ -227,7 +173,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     verifyUrl: id => `https://www.udemy.com/certificate/${encodeURIComponent(id)}/`,
     // Measured: Udemy answers automated requests with a Cloudflare
     // challenge (403 "just a moment"), so no automated check is possible.
-    autoVerify: null,
+    supportsAutoVerify: false,
     manualOnlyReason: "Udemy blocks automated verification requests",
     document: {
       urlPatterns: [
@@ -253,7 +199,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     // The real certificate URL is /certification/{username}/{cert-slug},
     // which needs a course slug we don't store. Until we capture that,
     // this stays manual-only.
-    autoVerify: null,
+    supportsAutoVerify: false,
     manualOnlyReason:
       "freeCodeCamp profiles are private by default, so a missing page doesn't prove a certificate is fake",
     document: {
@@ -269,12 +215,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     verifyUrl: id => `https://www.hackerrank.com/certificates/${encodeURIComponent(id)}`,
     // Measured: unknown certificate IDs return a clean HTTP 404. The body
     // is a large SPA shell in both cases, so trust the status code only.
-    autoVerify: {
-      fetchUrl: id => `https://www.hackerrank.com/certificates/${encodeURIComponent(id)}`,
-      notFoundMarkers: [],
-      validMarkers: ["hackerrank"],
-      trusts404: true,
-    },
+    supportsAutoVerify: true,
     document: {
       urlPatterns: [/hackerrank\.com\/certificates\/([A-Za-z0-9]{8,40})/i],
       expectedTerms: ["hackerrank", "certificate of accomplishment"],
@@ -289,7 +230,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     verifyUrl: () => "https://nptel.ac.in/noc",
     // NPTEL has no stable single-URL credential lookup — verification runs
     // through their portal with additional inputs, so this is manual-only.
-    autoVerify: null,
+    supportsAutoVerify: false,
     manualOnlyReason: "NPTEL verifies through its course portal rather than a direct credential URL",
     document: {
       // NPTEL certificates print the roll number and a verification URL
@@ -310,12 +251,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     verifyUrl: id => `https://courses.edx.org/certificates/${encodeURIComponent(id)}`,
     // Measured: unknown IDs return HTTP 404 with "page not found | edx"
     // in the <title> — both signals agree, so this one is well-grounded.
-    autoVerify: {
-      fetchUrl: id => `https://courses.edx.org/certificates/${encodeURIComponent(id)}`,
-      notFoundMarkers: ["page not found | edx"],
-      validMarkers: ["successfully completed", "verified certificate"],
-      trusts404: true,
-    },
+    supportsAutoVerify: true,
     document: {
       urlPatterns: [/edx\.org\/certificates\/([a-f0-9]{16,64})/i],
       expectedTerms: ["edx", "successfully completed", "verified certificate"],
@@ -329,7 +265,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     verifyUrl: () => "https://aws.amazon.com/verification",
     // AWS verification requires a validation number AND the holder's name
     // entered into a form — it cannot be resolved from a URL alone.
-    autoVerify: null,
+    supportsAutoVerify: false,
     manualOnlyReason: "AWS requires the validation number and your name entered on their verification form",
   },
   {
@@ -338,7 +274,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     idFormat: /^[A-Za-z0-9._-]{6,80}$/,
     formatHint: "Enter the credential ID or share code from your Microsoft Learn transcript",
     verifyUrl: id => `https://learn.microsoft.com/api/credentials/share/en-us/${encodeURIComponent(id)}`,
-    autoVerify: null,
+    supportsAutoVerify: false,
     manualOnlyReason: "Microsoft Learn credentials are shared via a personal transcript link",
   },
   {
@@ -347,7 +283,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     idFormat: null,
     formatHint: "",
     verifyUrl: null,
-    autoVerify: null,
+    supportsAutoVerify: false,
     manualOnlyReason: "LinkedIn Learning does not offer public certificate verification",
   },
   {
@@ -360,12 +296,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     // trusts404 is false. The discriminator is og:title — a real badge
     // page carries one, a nonexistent one carries none. Absence therefore
     // yields "inconclusive", never "invalid".
-    autoVerify: {
-      fetchUrl: id => `https://www.credly.com/badges/${encodeURIComponent(id)}`,
-      notFoundMarkers: [],
-      validMarkers: ['property="og:title"'],
-      trusts404: false,
-    },
+    supportsAutoVerify: true,
     document: {
       urlPatterns: [/credly\.com\/badges\/([a-f0-9-]{16,60})/i],
       expectedTerms: ["credly", "issued by", "badge"],
@@ -377,7 +308,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     idFormat: /^[A-Za-z0-9-]{6,80}$/,
     formatHint: "Oracle credential IDs are 6–80 letters, digits and dashes",
     verifyUrl: () => "https://catalog-education.oracle.com/pls/certview/sharebadge",
-    autoVerify: null,
+    supportsAutoVerify: false,
     manualOnlyReason: "Oracle CertView requires a share token entered on their portal",
   },
   {
@@ -390,12 +321,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     // trusts404 is false. The discriminator is og:title — a real badge
     // page carries one, a nonexistent one carries none. Absence therefore
     // yields "inconclusive", never "invalid".
-    autoVerify: {
-      fetchUrl: id => `https://www.credly.com/badges/${encodeURIComponent(id)}`,
-      notFoundMarkers: [],
-      validMarkers: ['property="og:title"'],
-      trusts404: false,
-    },
+    supportsAutoVerify: true,
     document: {
       urlPatterns: [/credly\.com\/badges\/([a-f0-9-]{16,60})/i],
       expectedTerms: ["credly", "issued by", "badge"],
@@ -407,19 +333,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     idFormat: /^[A-Z0-9]{8,24}$/,
     formatHint: "Meta certificates are verified via Coursera — use the Coursera credential code",
     verifyUrl: id => `https://www.coursera.org/verify/${encodeURIComponent(id)}`,
-    autoVerify: {
-      fetchUrl: id => `https://www.coursera.org/verify/${encodeURIComponent(id)}`,
-      notFoundMarkers: [],
-      validMarkers: [],
-      validPatterns: [
-        /<meta[^>]+property=["']og:title["'][^>]+content=["'][^"']*?(?:completion|specialization|professional)\s+certificate\s+for/i,
-        /<meta[^>]+property=["']og:description["'][^>]+content=["'][^"']*?this certificate verifies/i,
-      ],
-      notFoundPatterns: [
-        /<meta[^>]+property=["']og:title["'][^>]+content=["']Coursera\s*(?:\||&#x7c;)/i,
-      ],
-      trusts404: true,
-    },
+    supportsAutoVerify: true,
     document: {
       urlPatterns: [
         /coursera\.org\/account\/accomplishments\/(?:verify|professional-cert|specialization)\/([A-Z0-9]{8,24})/i,
@@ -434,7 +348,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     idFormat: null,
     formatHint: "",
     verifyUrl: null,
-    autoVerify: null,
+    supportsAutoVerify: false,
     manualOnlyReason: "Infosys Springboard does not offer public certificate verification",
   },
   {
@@ -443,7 +357,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     idFormat: /^[A-Za-z0-9]{4,40}$/,
     formatHint: "Simplilearn certificate codes are 4–40 letters and digits",
     verifyUrl: id => `https://certificates.simplicdn.net/share/${encodeURIComponent(id)}.png`,
-    autoVerify: null,
+    supportsAutoVerify: false,
     manualOnlyReason: "Simplilearn serves certificates as images without a machine-readable status",
   },
   {
@@ -452,7 +366,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     idFormat: /^[A-Za-z0-9]{4,40}$/,
     formatHint: "Great Learning verification codes are 4–40 letters and digits",
     verifyUrl: () => "https://www.mygreatlearning.com/verify-certificate",
-    autoVerify: null,
+    supportsAutoVerify: false,
     manualOnlyReason: "Great Learning requires the code entered on their verification form",
   },
   {
@@ -461,7 +375,7 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     idFormat: null,
     formatHint: "",
     verifyUrl: null,
-    autoVerify: null,
+    supportsAutoVerify: false,
     manualOnlyReason: "Automatic verification isn't available for this issuer",
   },
 ];

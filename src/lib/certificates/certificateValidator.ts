@@ -39,7 +39,7 @@ export function checkCredentialFormat(issuerKey: string, rawId: string): FormatC
     return {
       status: "ok",
       message: "",
-      canAttemptLiveCheck: Boolean(issuer.autoVerify),
+      canAttemptLiveCheck: issuer.supportsAutoVerify,
     };
   }
 
@@ -54,7 +54,7 @@ export function checkCredentialFormat(issuerKey: string, rawId: string): FormatC
   return {
     status: "ok",
     message: "",
-    canAttemptLiveCheck: Boolean(issuer.autoVerify),
+    canAttemptLiveCheck: issuer.supportsAutoVerify,
   };
 }
 

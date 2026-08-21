@@ -436,12 +436,12 @@ function CertForm({
               <AlertCircle className="h-3 w-3 mt-px shrink-0" /> {format.message}
             </p>
           )}
-          {format.status === "ok" && draft.credentialId && issuer?.autoVerify && (
+          {format.status === "ok" && draft.credentialId && issuer?.supportsAutoVerify && (
             <p className="text-[11px] text-[--ag-muted] pt-0.5">
               Format looks right — we'll verify it with {issuer.label} after you save.
             </p>
           )}
-          {format.status === "ok" && draft.credentialId && issuer && !issuer.autoVerify && issuer.manualOnlyReason && (
+          {format.status === "ok" && draft.credentialId && issuer && !issuer.supportsAutoVerify && issuer.manualOnlyReason && (
             <p className="text-[11px] text-[--ag-muted] pt-0.5">{issuer.manualOnlyReason}.</p>
           )}
         </div>
@@ -460,7 +460,7 @@ function CertForm({
           handle we get on issuers that can't be checked server-side. */}
       <div className="space-y-1">
         <Label className="text-xs font-semibold uppercase tracking-wider text-[--ag-muted]">
-          Certificate File {issuer && !issuer.autoVerify && <span className="text-[--ag-accent]">— recommended</span>}
+          Certificate File {issuer && !issuer.supportsAutoVerify && <span className="text-[--ag-accent]">— recommended</span>}
         </Label>
         <CertificateUpload
           fileName={pendingFile?.name ?? draft.fileName ?? null}
@@ -806,7 +806,7 @@ export default function Profile() {
         if (!cert.issuer || !cert.credentialId.trim()) continue;
 
         const issuer = getIssuer(cert.issuer);
-        if (!issuer?.autoVerify) continue;
+        if (!issuer?.supportsAutoVerify) continue;
 
         const key = cacheKey(cert.issuer, cert.credentialId);
         // verifyCertificate returns the cached value untouched when it's
@@ -1408,7 +1408,7 @@ export default function Profile() {
                     const result = verifications[certKey];
                     const badgeState: BadgeState = verifying.has(certKey)
                       ? "checking"
-                      : result?.status ?? (certIssuer?.autoVerify ? "unchecked" : "unsupported");
+                      : result?.status ?? (certIssuer?.supportsAutoVerify ? "unchecked" : "unsupported");
                     return (
                       <div key={cert.id} className="border-l-2 border-[--ag-accent]/30 pl-4 group py-0.5">
                         <div className="flex items-start justify-between gap-2">
@@ -1425,7 +1425,7 @@ export default function Profile() {
                                 message={result?.message}
                                 manualUrl={manualVerifyUrl(cert.issuer, cert.credentialId)}
                                 issuerLabel={certIssuer?.label ?? cert.issuer}
-                                onRecheck={certIssuer?.autoVerify ? () => recheckCertificate(cert) : undefined}
+                                onRecheck={certIssuer?.supportsAutoVerify ? () => recheckCertificate(cert) : undefined}
                               />
                             )}
 
