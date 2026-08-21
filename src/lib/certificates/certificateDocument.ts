@@ -147,6 +147,15 @@ export function analyzeCertificateDocument(
       notes.push(`✓ Found a ${issuer!.label} verification link printed on the certificate`);
     } else {
       notes.push(`⚠ No ${issuer!.label} verification link found on this document`);
+      // These patterns are tuned against real certificates; when one
+      // misses, surface what URLs the document DID contain so the
+      // mismatch is diagnosable instead of just disappointing.
+      const urls = Array.from(new Set(text.match(/https?:\/\/[^\s"')]+|[a-z0-9.-]+\.(?:org|com|in)\/[^\s"')]+/gi) ?? []));
+      if (urls.length > 0) {
+        console.debug("[certificate] URLs found on document but none matched", issuerKey, urls.slice(0, 10));
+      } else {
+        console.debug("[certificate] no URLs found in extracted text", issuerKey, `${text.length} chars`);
+      }
     }
   }
 

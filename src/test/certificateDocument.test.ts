@@ -63,6 +63,28 @@ describe("certificate document analysis", () => {
     expect(a.readable).toBe(false);
   });
 
+  it("runs no issuer checks when no issuer is selected yet", () => {
+    // Regression: the analysis used to run once at file-select time, so
+    // uploading before choosing the issuer produced a result with no
+    // issuer checks at all — and it was then shown as if it were final.
+    // The form must re-analyse when the issuer changes; this asserts the
+    // no-issuer case is genuinely empty so a stale one is detectable.
+    const a = analyzeCertificateDocument(COURSERA_PDF, "", "VWOA232ZHJD8", "Vasanth S J R");
+    expect(a.foundIssuerUrl).toBe(false);
+    expect(a.extractedCredentialId).toBeNull();
+    expect(a.expectedTermsFound).toEqual([]);
+    // The name check is issuer-independent, so it still runs.
+    expect(a.holderNameMatches).toBe(true);
+    expect(a.consistency).toBe("partial");
+  });
+
+  it("upgrades to strong once the issuer is supplied for the same document", () => {
+    const before = analyzeCertificateDocument(COURSERA_PDF, "", "8ZQ3FKMHXW5T", "Vasanth S J R");
+    const after = analyzeCertificateDocument(COURSERA_PDF, "Coursera", "8ZQ3FKMHXW5T", "Vasanth S J R");
+    expect(before.consistency).toBe("partial");
+    expect(after.consistency).toBe("strong");
+  });
+
   it("doesn't credit an issuer URL belonging to a different provider", () => {
     // A Udemy URL on a document the user labelled as Coursera.
     const a = analyzeCertificateDocument(UDEMY_PDF, "Coursera", "", "Vasanth S J R");

@@ -21,7 +21,7 @@ import {
 import {
   uploadCertificateFile, saveDocumentAnalysis, loadDocumentAnalyses,
   deleteCertificateFile, removeDocumentAnalysis, getCertificateSignedUrl,
-  StoredCertificateDocument,
+  downloadCertificateFile, StoredCertificateDocument,
 } from "@/lib/certificates/certificateStorage";
 import { assessCredentialTrust } from "@/lib/certificates/credentialTrust";
 import {
@@ -576,6 +576,11 @@ export default function Profile() {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [pendingAnalysis, setPendingAnalysis] = useState<DocumentAnalysis | null>(null);
   const [analyzingDoc, setAnalyzingDoc] = useState(false);
+  // Extracted text is kept separately from the analysis because the
+  // analysis depends on fields the user can still change (issuer,
+  // credential ID). Holding the text lets us re-analyse on every edit
+  // without re-parsing the PDF.
+  const [pendingText, setPendingText] = useState<string | null>(null);
 
   useEffect(() => {
     if (!profile) return;
@@ -619,13 +624,14 @@ export default function Profile() {
       // and shown, but we say plainly that we couldn't read it rather
       // than pretending an OCR result we don't have.
       const text = file.type === "application/pdf" ? await extractPdfText(file) : "";
+      setPendingText(text);
+
+      // Analysis itself is handled by the effect below, which re-runs on
+      // every change to issuer or credential ID. Here we only do the
+      // one-time convenience of filling an empty ID from the document.
       const analysis = analyzeCertificateDocument(
         text, certDraft.issuer, certDraft.credentialId, fullName || null,
       );
-      setPendingAnalysis(analysis);
-
-      // If the document carries an ID and the field is empty, fill it in —
-      // that's the main convenience win of uploading.
       if (analysis.extractedCredentialId && !certDraft.credentialId.trim()) {
         setCertDraft(prev => prev ? { ...prev, credentialId: analysis.extractedCredentialId! } : prev);
         toast({
@@ -635,6 +641,7 @@ export default function Profile() {
       }
     } catch (err: any) {
       console.error("Certificate document analysis failed:", err);
+      setPendingText(null);
       setPendingAnalysis(null);
       toast({
         title: "Couldn't read that file",
@@ -646,9 +653,49 @@ export default function Profile() {
     }
   };
 
+  // Re-analyse whenever the inputs the analysis depends on change. Without
+  // this the result reflects whatever the issuer and credential ID were at
+  // the moment the file was picked — so uploading before choosing the
+  // issuer silently produced an analysis with no issuer checks at all.
+  useEffect(() => {
+    if (pendingText === null || !certDraft) {
+      return;
+    }
+    setPendingAnalysis(analyzeCertificateDocument(
+      pendingText, certDraft.issuer, certDraft.credentialId, fullName || null,
+    ));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingText, certDraft?.issuer, certDraft?.credentialId, fullName]);
+
+  // Re-open an existing certificate for editing: pull its stored file back
+  // down so the checks above can run against the current field values
+  // rather than replaying a stale saved result.
+  const openCertForEdit = async (cert: CertEntry) => {
+    setCertDraft({ ...cert });
+    setEditSection(`cert_${cert.id}`);
+    setPendingFile(null);
+    setPendingText(null);
+    setPendingAnalysis(storedAsAnalysis(certDocs[cert.id]));
+
+    if (!cert.filePath) return;
+    setAnalyzingDoc(true);
+    try {
+      const file = await downloadCertificateFile(cert.filePath);
+      if (file) {
+        const text = file.type === "application/pdf" ? await extractPdfText(file) : "";
+        setPendingText(text);
+      }
+    } catch (err) {
+      console.error("Couldn't re-read stored certificate:", err);
+    } finally {
+      setAnalyzingDoc(false);
+    }
+  };
+
   const handleCertFileRemove = async () => {
     setPendingFile(null);
     setPendingAnalysis(null);
+    setPendingText(null);
     if (!certDraft) return;
 
     // Clearing a file that was already saved must remove it from storage
@@ -668,7 +715,33 @@ export default function Profile() {
   /** Uploads any pending file and records its analysis. Returns the entry
    *  with storage details attached, ready to persist into the profile. */
   const commitCertDocument = async (cert: CertEntry): Promise<CertEntry> => {
-    if (!user || !pendingFile) return cert;
+    if (!user) return cert;
+
+    // No new file chosen, but the issuer or credential ID may have been
+    // edited since the document was analysed — persist the refreshed
+    // result so the saved record isn't stale.
+    if (!pendingFile) {
+      if (cert.filePath && pendingAnalysis) {
+        await saveDocumentAnalysis(
+          user.id, cert.id, cert.issuer, cert.filePath, cert.fileName ?? "", pendingAnalysis,
+        );
+        setCertDocs(prev => ({
+          ...prev,
+          [cert.id]: {
+            certificateId: cert.id,
+            issuer: cert.issuer,
+            storagePath: cert.filePath!,
+            fileName: cert.fileName ?? null,
+            consistency: pendingAnalysis.consistency,
+            extractedId: pendingAnalysis.extractedCredentialId,
+            nameMatched: pendingAnalysis.holderNameMatches,
+            notes: pendingAnalysis.notes,
+            analyzedAt: new Date().toISOString(),
+          },
+        }));
+      }
+      return cert;
+    }
 
     const { path, error } = await uploadCertificateFile(user.id, cert.id, pendingFile);
     if (error || !path) {
@@ -711,6 +784,7 @@ export default function Profile() {
     setCertDraft(null);
     setPendingFile(null);
     setPendingAnalysis(null);
+    setPendingText(null);
   };
 
   const viewCertificate = async (storagePath: string) => {
@@ -1308,7 +1382,7 @@ export default function Profile() {
                         <CertForm key={cert.id} draft={certDraft} onChange={setCertDraft} saving={saving}
                           profileName={fullName || null}
                           pendingFile={pendingFile}
-                          docAnalysis={pendingAnalysis ?? storedAsAnalysis(certDocs[cert.id])}
+                          docAnalysis={pendingAnalysis}
                           analyzing={analyzingDoc}
                           onFileSelect={handleCertFileSelect}
                           onFileRemove={handleCertFileRemove}
@@ -1387,7 +1461,7 @@ export default function Profile() {
                               </button>
                             )}
                           </div>
-                          <button onClick={() => { setCertDraft({ ...cert }); setEditSection(`cert_${cert.id}`); }}
+                          <button onClick={() => openCertForEdit(cert)}
                             className="opacity-0 group-hover:opacity-100 text-[--ag-muted] hover:text-[--ag-accent] transition-all shrink-0">
                             <Edit3 className="h-3.5 w-3.5" />
                           </button>

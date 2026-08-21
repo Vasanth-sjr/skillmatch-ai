@@ -62,6 +62,18 @@ export async function getCertificateSignedUrl(storagePath: string): Promise<stri
   return data?.signedUrl ?? null;
 }
 
+/** Pulls a stored certificate back down so its text can be re-analysed
+ *  when the user edits the issuer or credential ID after uploading. */
+export async function downloadCertificateFile(storagePath: string): Promise<File | null> {
+  const { data, error } = await supabase.storage.from(BUCKET).download(storagePath);
+  if (error || !data) {
+    console.error("Couldn't download certificate for re-analysis:", error);
+    return null;
+  }
+  const name = storagePath.split("/").pop() ?? "certificate";
+  return new File([data], name, { type: data.type });
+}
+
 export async function deleteCertificateFile(storagePath: string): Promise<void> {
   const { error } = await supabase.storage.from(BUCKET).remove([storagePath]);
   if (error) console.error("Couldn't delete certificate file:", error);
