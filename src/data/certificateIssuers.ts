@@ -37,23 +37,29 @@
 //                 404 there cannot distinguish fake from unshared
 //   Credly        200 for unknown, but a real badge carries an og:title
 //                 and a bogus one carries none → positive-marker only
-//   Coursera      200 for unknown, result rendered client-side; HTML is
-//                 the generic marketing shell → NO server-side signal
-//                 exists, so auto-verify is disabled rather than guessed
+//   Coursera      200 for BOTH, same marketing shell, but the og: meta
+//                 tags differ decisively (see the entry below) →
+//                 auto-verify works via scoped patterns
 //   Udemy         403 + Cloudflare "just a moment" challenge → the check
 //                 is blocked, so auto-verify is disabled
 //
-// Coursera, Udemy and freeCodeCamp are deliberately manual-only. A check
-// that cannot distinguish a real credential from a fake one is worse than
-// no check, because it launders a guess into a badge.
+// Udemy and freeCodeCamp are deliberately manual-only. A check that
+// cannot distinguish a real credential from a fake one is worse than no
+// check, because it launders a guess into a badge.
 //
-// STILL UNCONFIRMED: the *positive* path (a real credential returning
-// "verified") has not been exercised for HackerRank or edX — only the
-// negative path was measurable without a genuine credential. Both use
-// single-purpose public certificate URLs with no privacy default, which
-// is why their 404 is trusted where freeCodeCamp's is not. Confirm with a
-// real credential when one is available; until then the "inconclusive"
-// fallback keeps an unrecognised page from being scored either way.
+// Coursera was ALSO manual-only until a real credential became available
+// to diff against a bogus one. The earlier "no server-side signal exists"
+// conclusion was drawn from the not-found page alone and was wrong — a
+// reminder that a negative probe cannot establish that two cases are
+// indistinguishable. Always diff both.
+//
+// STILL UNCONFIRMED: the *positive* path has not been exercised for
+// HackerRank or edX — only the negative path was measurable without a
+// genuine credential. Both use single-purpose public certificate URLs
+// with no privacy default, which is why their 404 is trusted where
+// freeCodeCamp's is not. Confirm with a real credential when one is
+// available; until then the "inconclusive" fallback keeps an
+// unrecognised page from being scored either way.
 
 export type IssuerKey =
   | "Coursera" | "Google" | "AWS" | "Microsoft" | "LinkedIn Learning"
@@ -68,6 +74,18 @@ export interface AutoVerifyConfig {
   notFoundMarkers: string[];
   /** Lowercased substrings that positively confirm a real credential page. */
   validMarkers: string[];
+  /**
+   * Regexes run against the RAW html, for issuers where the signal lives
+   * in a specific element rather than anywhere in the body.
+   *
+   * Coursera is the reason these exist: its 376KB marketing shell mentions
+   * enough that a plain substring like "power bi" matches the not-found
+   * page too. Only the og: meta tags actually distinguish a real
+   * credential, so the check has to be scoped to them.
+   */
+  validPatterns?: RegExp[];
+  /** Regexes on raw html that positively indicate no such credential. */
+  notFoundPatterns?: RegExp[];
   /** True when the provider reliably 404s for unknown credentials. */
   trusts404: boolean;
 }
@@ -136,13 +154,32 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     idFormat: /^[A-Z0-9]{8,24}$/,
     formatHint: "Coursera codes are 8–24 uppercase letters and digits, e.g. 8ZQ3FKMHXW5T",
     verifyUrl: id => `https://www.coursera.org/verify/${encodeURIComponent(id)}`,
-    // Measured: bogus codes return HTTP 200 with the generic Coursera
-    // marketing shell — the verification result is rendered client-side.
-    // There is nothing in the server response to distinguish a real
-    // credential from a fake one.
-    autoVerify: null,
-    manualOnlyReason:
-      "Coursera shows verification results only in the browser, so it can't be confirmed automatically",
+    // Measured against a real credential AND a bogus one (2026-08-21):
+    // both return HTTP 200 and the same 376KB+ marketing shell, but the
+    // og: meta tags differ decisively —
+    //
+    //   real  og:title = "Completion Certificate for <course name>"
+    //   bogus og:title = "Coursera | Online Courses & Credentials..."
+    //
+    // Body substrings are NOT usable here: the marketing shell mentions
+    // enough that even "power bi" matches the not-found page. The check
+    // must be scoped to the meta tags, hence the pattern form.
+    autoVerify: {
+      fetchUrl: id => `https://www.coursera.org/verify/${encodeURIComponent(id)}`,
+      notFoundMarkers: [],
+      validMarkers: [],
+      validPatterns: [
+        /<meta[^>]+property=["']og:title["'][^>]+content=["'][^"']*?(?:completion|specialization|professional)\s+certificate\s+for/i,
+        /<meta[^>]+property=["']og:description["'][^>]+content=["'][^"']*?this certificate verifies/i,
+      ],
+      notFoundPatterns: [
+        // The generic marketing og:title, which only the not-found page
+        // serves. Checked after the positive patterns, so a real page can
+        // never be denied by it.
+        /<meta[^>]+property=["']og:title["'][^>]+content=["']Coursera\s*(?:\||&#x7c;)/i,
+      ],
+      trusts404: true,
+    },
     document: {
       urlPatterns: [
         /coursera\.org\/account\/accomplishments\/(?:verify|professional-cert|specialization)\/([A-Z0-9]{8,24})/i,
@@ -158,9 +195,21 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     idFormat: /^[A-Z0-9]{8,24}$/,
     formatHint: "Google Career Certificates are verified via Coursera — use the Coursera credential code",
     verifyUrl: id => `https://www.coursera.org/verify/${encodeURIComponent(id)}`,
-    autoVerify: null,
-    manualOnlyReason:
-      "Google certificates verify through Coursera, which shows results only in the browser",
+    // Same mechanism as Coursera — Google's career certificates are issued
+    // and verified through it.
+    autoVerify: {
+      fetchUrl: id => `https://www.coursera.org/verify/${encodeURIComponent(id)}`,
+      notFoundMarkers: [],
+      validMarkers: [],
+      validPatterns: [
+        /<meta[^>]+property=["']og:title["'][^>]+content=["'][^"']*?(?:completion|specialization|professional)\s+certificate\s+for/i,
+        /<meta[^>]+property=["']og:description["'][^>]+content=["'][^"']*?this certificate verifies/i,
+      ],
+      notFoundPatterns: [
+        /<meta[^>]+property=["']og:title["'][^>]+content=["']Coursera\s*(?:\||&#x7c;)/i,
+      ],
+      trusts404: true,
+    },
     document: {
       urlPatterns: [
         /coursera\.org\/account\/accomplishments\/(?:verify|professional-cert|specialization)\/([A-Z0-9]{8,24})/i,
@@ -358,9 +407,26 @@ export const CERTIFICATE_ISSUERS: CertificateIssuer[] = [
     idFormat: /^[A-Z0-9]{8,24}$/,
     formatHint: "Meta certificates are verified via Coursera — use the Coursera credential code",
     verifyUrl: id => `https://www.coursera.org/verify/${encodeURIComponent(id)}`,
-    autoVerify: null,
-    manualOnlyReason:
-      "Meta certificates verify through Coursera, which shows results only in the browser",
+    autoVerify: {
+      fetchUrl: id => `https://www.coursera.org/verify/${encodeURIComponent(id)}`,
+      notFoundMarkers: [],
+      validMarkers: [],
+      validPatterns: [
+        /<meta[^>]+property=["']og:title["'][^>]+content=["'][^"']*?(?:completion|specialization|professional)\s+certificate\s+for/i,
+        /<meta[^>]+property=["']og:description["'][^>]+content=["'][^"']*?this certificate verifies/i,
+      ],
+      notFoundPatterns: [
+        /<meta[^>]+property=["']og:title["'][^>]+content=["']Coursera\s*(?:\||&#x7c;)/i,
+      ],
+      trusts404: true,
+    },
+    document: {
+      urlPatterns: [
+        /coursera\.org\/account\/accomplishments\/(?:verify|professional-cert|specialization)\/([A-Z0-9]{8,24})/i,
+        /coursera\.org\/verify\/(?:professional-cert\/|specialization\/)?([A-Z0-9]{8,24})/i,
+      ],
+      expectedTerms: ["coursera", "meta", "has successfully completed"],
+    },
   },
   {
     key: "Infosys Springboard",

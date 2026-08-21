@@ -38,12 +38,25 @@ describe("credential format validation", () => {
 
 describe("issuer registry integrity", () => {
   it("only claims auto-verification where behaviour was actually measured", () => {
-    // These were probed against live endpoints and found to be either
-    // client-rendered (Coursera family), bot-blocked (Udemy), or unable
-    // to distinguish fake from unshared (freeCodeCamp). Re-enabling any
-    // of them requires re-probing first — see certificateIssuers.ts.
-    for (const key of ["Coursera", "Google", "Meta", "Udemy", "freeCodeCamp"]) {
+    // Udemy is bot-blocked; freeCodeCamp cannot distinguish a fake
+    // credential from an unshared private profile. Re-enabling either
+    // requires re-probing first — see certificateIssuers.ts.
+    for (const key of ["Udemy", "freeCodeCamp"]) {
       expect(getIssuer(key)?.autoVerify, `${key} must stay manual-only`).toBeNull();
+    }
+  });
+
+  it("checks Coursera through meta-tag patterns, never body substrings", () => {
+    // Coursera's not-found page is a 376KB marketing shell that mentions
+    // enough to match almost any plain substring — "power bi" hits it.
+    // Body markers here would produce false "verified" results, so the
+    // config must rely on scoped patterns only.
+    for (const key of ["Coursera", "Google", "Meta"]) {
+      const cfg = getIssuer(key)?.autoVerify;
+      expect(cfg, `${key} should auto-verify`).toBeTruthy();
+      expect(cfg!.validMarkers, `${key} must not use body substrings`).toEqual([]);
+      expect(cfg!.notFoundMarkers, `${key} must not use body substrings`).toEqual([]);
+      expect(cfg!.validPatterns?.length, `${key} needs positive patterns`).toBeGreaterThan(0);
     }
   });
 

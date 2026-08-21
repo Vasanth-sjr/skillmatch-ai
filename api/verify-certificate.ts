@@ -130,7 +130,7 @@ export default async function handler(req: any, res: any) {
       },
     });
 
-    const html = (await response.text()).slice(0, MAX_BODY_CHARS).toLowerCase();
+    const html = (await response.text()).slice(0, MAX_BODY_CHARS);
     return reply(res, classify(response.status, html, issuer));
   } catch (err: any) {
     const aborted = err?.name === "AbortError";
@@ -149,10 +149,13 @@ export default async function handler(req: any, res: any) {
 
 function classify(
   httpStatus: number,
-  html: string,
+  rawHtml: string,
   issuer: NonNullable<ReturnType<typeof getIssuer>>,
 ): VerifyResponse {
   const cfg = issuer.autoVerify!;
+  // Substring markers are matched case-insensitively; pattern markers run
+  // against the raw html so they can target specific tags and attributes.
+  const html = rawHtml.toLowerCase();
 
   // 1. Bot challenge / block — checked FIRST so it can never be mistaken
   //    for a not-found page.
@@ -186,24 +189,29 @@ function classify(
     };
   }
 
-  // 4. Explicit not-found wording in the page body.
-  const notFound = cfg.notFoundMarkers.find(m => html.includes(m));
-  if (notFound) {
+  // 4. Positive confirmation, checked BEFORE any not-found inference.
+  //    A page that positively identifies the credential must never be
+  //    overruled by a generic marker that merely suggests absence —
+  //    otherwise a layout change could start denying real certificates.
+  const validMarker = cfg.validMarkers.find(m => html.includes(m));
+  const validPattern = cfg.validPatterns?.find(p => p.test(rawHtml));
+  if (httpStatus === 200 && (validMarker || validPattern)) {
     return {
-      status: "invalid",
-      signal: `not_found_marker:${notFound}`,
-      message: `${issuer.label} has no certificate with that ID.`,
+      status: "verified",
+      signal: validMarker ? `valid_marker:${validMarker}` : `valid_pattern:${validPattern}`,
+      message: `Confirmed on ${issuer.label}.`,
       checkedAt: now(),
     };
   }
 
-  // 5. Positive confirmation.
-  const valid = cfg.validMarkers.find(m => html.includes(m));
-  if (httpStatus === 200 && valid) {
+  // 5. Explicit not-found signals.
+  const notFound = cfg.notFoundMarkers.find(m => html.includes(m));
+  const notFoundPattern = cfg.notFoundPatterns?.find(p => p.test(rawHtml));
+  if (notFound || notFoundPattern) {
     return {
-      status: "verified",
-      signal: `valid_marker:${valid}`,
-      message: `Confirmed on ${issuer.label}.`,
+      status: "invalid",
+      signal: notFound ? `not_found_marker:${notFound}` : `not_found_pattern:${notFoundPattern}`,
+      message: `${issuer.label} has no certificate with that ID.`,
       checkedAt: now(),
     };
   }
