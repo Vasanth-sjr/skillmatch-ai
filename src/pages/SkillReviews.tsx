@@ -15,6 +15,7 @@ import {
   LearningEvidenceInput,
 } from "@/lib/amsce/adaptiveConfidenceEngine";
 import { ExperienceEntry, ProjectEntry } from "@/lib/amsce/resumeContextAnalyzer";
+import { loadCertificateEvidence } from "@/lib/certificates/certificateEvidence";
 import { cn } from "@/lib/utils";
 import { Star, TrendingUp, AlertCircle, CheckCircle2, RefreshCw, Loader2, ChevronDown, ShieldAlert } from "lucide-react";
 
@@ -370,6 +371,14 @@ export default function SkillReviews() {
   const [confidence, setConfidence] = useState<Record<string, SkillConfidenceResult>>({});
   const [computing, setComputing] = useState(false);
 
+  // Stable identity for the certificate list, so adding or verifying a
+  // certificate triggers a recompute without the array's changing
+  // reference causing one on every render.
+  const certificationsKey = JSON.stringify(
+    ((profile as any)?.certifications ?? []).map((c: any) =>
+      [c.id, c.name, c.issuer, c.credentialId, c.issueDate, c.expiryDate].join("|")),
+  );
+
   // Sync path from profile on load
   useEffect(() => {
     if (profile?.career_goal) setSelectedPath(profile.career_goal as CareerPathKey);
@@ -409,9 +418,12 @@ export default function SkillReviews() {
 
     (async () => {
       try {
-        const [interviewBySkill, learningRows] = await Promise.all([
+        // Certificates are path-independent: a Power BI certificate is
+        // evidence for that skill whichever career path is being viewed.
+        const [interviewBySkill, learningRows, certificates] = await Promise.all([
           loadInterviewEvidence(user.id, selectedPath),
           loadLearningEvidence(user.id, selectedPath),
+          loadCertificateEvidence(user.id, (profile as any)?.certifications ?? []),
         ]);
         if (cancelled) return;
 
@@ -437,6 +449,7 @@ export default function SkillReviews() {
             projects,
             interviewEvidence,
             learningEvidence,
+            certificates,
           });
         });
 
@@ -461,7 +474,10 @@ export default function SkillReviews() {
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, selectedPath, loading, ratings, histories]);
+    // Serialized rather than passed by reference: the certifications array
+    // is rebuilt on every profile fetch, so depending on it directly would
+    // re-run this effect (and re-upsert) on every render.
+  }, [user, selectedPath, loading, ratings, histories, certificationsKey]);
 
   const rate = async (skill: string, val: number) => {
     if (!user || val === ratings[skill]) return; // no-op on re-clicking the same value

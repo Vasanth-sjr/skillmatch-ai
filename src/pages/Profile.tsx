@@ -1430,12 +1430,16 @@ export default function Profile() {
                             )}
 
                             {/* Combined trust level — what the issuer said AND
-                                what the uploaded document showed. */}
+                                what the uploaded document showed. Suppressed
+                                when it would only restate the verification
+                                badge above: issuer confirmation is the sole
+                                route to "verified", so the two agree exactly. */}
                             {(result || certDocs[cert.id]) && (() => {
                               const trust = assessCredentialTrust(
                                 result?.status ?? null,
                                 certDocs[cert.id]?.consistency ?? null,
                               );
+                              if (trust.level === "verified") return null;
                               return (
                                 <div className="mt-1.5 flex items-center gap-2 flex-wrap">
                                   <span className={cn(

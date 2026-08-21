@@ -13,6 +13,8 @@ import { getSkillEcosystem } from "@/data/skillEcosystems";
 import { resolveSkillVocabTerms } from "@/data/skillLabelMap";
 import { analyzeResumeContext, ExperienceEntry, ProjectEntry } from "./resumeContextAnalyzer";
 import { analyzeCareerGoalAlignment } from "./careerGoalAnalyzer";
+import { analyzeCertificates } from "./certificateAnalyzer";
+import { CertificateEvidence } from "@/lib/certificates/certificateEvidence";
 import { freshnessDiscount, HALF_LIFE_MONTHS } from "./evidenceNormalizer";
 import { computeAgreement, computeBehavioralReliabilityIndex, computeSkillDepthScore } from "./crossModalConsistency";
 
@@ -31,6 +33,7 @@ export interface ComputeConfidenceParams {
   projects: ProjectEntry[];
   interviewEvidence: InterviewEvidenceInput[];
   learningEvidence: LearningEvidenceInput[];
+  certificates: CertificateEvidence[];
 }
 
 export interface EvidenceModuleSummary {
@@ -57,12 +60,23 @@ export interface SkillConfidenceResult {
   };
 }
 
-const WEIGHTS = { resume: 0.3, interview: 0.3, careerGoal: 0.2, learning: 0.2 };
+// Five modules now. Certificates take a meaningful share because they are
+// the only source carrying third-party confirmation; resume and interview
+// each give up 0.05 and the two weakest contextual signals give up 0.05
+// each, rather than diluting every module evenly.
+const WEIGHTS = {
+  resume: 0.25,
+  interview: 0.25,
+  certificate: 0.20,
+  careerGoal: 0.15,
+  learning: 0.15,
+};
 
 export function computeSkillConfidence(params: ComputeConfidenceParams): SkillConfidenceResult {
   const {
     skillLabel, selfRating, ratingHistory, careerGoal,
     profileSkills, experience, projects, interviewEvidence, learningEvidence,
+    certificates,
   } = params;
 
   const vocabTerms = resolveSkillVocabTerms(skillLabel);
@@ -84,6 +98,8 @@ export function computeSkillConfidence(params: ComputeConfidenceParams): SkillCo
     .sort()
     .at(-1) ?? null;
 
+  const certificate = analyzeCertificates(certificates ?? [], vocabTerms);
+
   // ── Freshness discounting ────────────────────────────────────────────
   const modules: EvidenceModuleSummary[] = [
     {
@@ -95,6 +111,11 @@ export function computeSkillConfidence(params: ComputeConfidenceParams): SkillCo
       name: "Mock Interview", weight: WEIGHTS.interview,
       rawEvidence: interviewRaw, timestamp: interviewTimestamp,
       discountedEvidence: freshnessDiscount(interviewRaw, interviewTimestamp, HALF_LIFE_MONTHS.interview),
+    },
+    {
+      name: "Certificates", weight: WEIGHTS.certificate,
+      rawEvidence: certificate.value, timestamp: certificate.timestamp,
+      discountedEvidence: freshnessDiscount(certificate.value, certificate.timestamp, HALF_LIFE_MONTHS.certificate),
     },
     {
       name: "Career Goal Alignment", weight: WEIGHTS.careerGoal,
@@ -133,6 +154,21 @@ export function computeSkillConfidence(params: ComputeConfidenceParams): SkillCo
 
   if (interviewRaw > 0) explainability.push(`✓ Demonstrated in a Mock Interview answer`);
   else explainability.push("○ Not yet demonstrated in a Mock Interview answer");
+
+  if (certificate.trustLevel === "verified") {
+    explainability.push(
+      `✓ Backed by "${certificate.matchedName}", confirmed with the issuer` +
+      (certificate.expired ? " (now expired)" : ""),
+    );
+  } else if (certificate.trustLevel === "corroborated") {
+    explainability.push(`✓ Backed by "${certificate.matchedName}" — document checked, not issuer-confirmed`);
+  } else if (certificate.trustLevel === "self_reported") {
+    explainability.push(`○ "${certificate.matchedName}" listed, but nothing independently backs it yet`);
+  } else if (certificate.trustLevel === "disputed") {
+    explainability.push(`⚠ "${certificate.matchedName}" could not be substantiated — it adds nothing here`);
+  } else {
+    explainability.push("○ No certificate covering this skill");
+  }
 
   if (careerGoalScore === 1.0) explainability.push("✓ Core skill for your selected career path");
   else if (careerGoalScore === 0.3) explainability.push("○ Relevant to a different career path than your current goal");

@@ -21,4 +21,10 @@ export const HALF_LIFE_MONTHS = {
   resume: 24,
   interview: 12,
   learning: 18,
+  // Certificates age most slowly of all: a third party confirmed the
+  // skill at a fixed point in time, and that confirmation doesn't lose
+  // meaning as quickly as a self-written profile line. Lapsed expiry is
+  // handled separately in the Certificate Analyzer, since an explicit
+  // expiry date is a much stronger signal than elapsed time alone.
+  certificate: 36,
 } as const;
