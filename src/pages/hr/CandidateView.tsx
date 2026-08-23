@@ -12,9 +12,10 @@ import {
 import { cn } from "@/lib/utils";
 import { VerifiedEvidence } from "@/components/hr/VerifiedEvidence";
 import {
-  loadCandidateSkillEvidence, loadCandidateCertificates,
-  CandidateSkillEvidence, CandidateCertificate,
+  loadCandidateSkillEvidence, loadCandidateCertificates, loadCandidateAnswers,
+  CandidateSkillEvidence, CandidateCertificate, CandidateAnswer,
 } from "@/lib/amsce/candidateEvidence";
+import { CandidateAnswers } from "@/components/hr/CandidateAnswers";
 import { recordHiringOutcome, HiringOutcome } from "@/lib/amsce/outcomeFeedback";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -88,6 +89,7 @@ export default function CandidateView() {
   const [updating, setUpdating] = useState<string | null>(null);
   const [skillEvidence, setSkillEvidence] = useState<CandidateSkillEvidence[]>([]);
   const [certificates, setCertificates] = useState<CandidateCertificate[]>([]);
+  const [answers, setAnswers] = useState<CandidateAnswer[]>([]);
 
   useEffect(() => {
     if (!id || !user) return;
@@ -111,12 +113,17 @@ export default function CandidateView() {
         setCandidate(profile);
         // AMSCE evidence is loaded after the profile because the
         // certificate join needs the profile's certifications array.
-        const [evidence, certs] = await Promise.all([
+        const [evidence, certs, sharedAnswers] = await Promise.all([
           loadCandidateSkillEvidence(id),
           loadCandidateCertificates(id, profile.certifications ?? []),
+          // Returns [] when the candidate hasn't consented — the RLS
+          // policy simply yields no rows, and we don't distinguish that
+          // from having written nothing.
+          loadCandidateAnswers(id),
         ]);
         setSkillEvidence(evidence);
         setCertificates(certs);
+        setAnswers(sharedAnswers);
       }
 
       // Only show applications for this employer's jobs
@@ -245,6 +252,8 @@ export default function CandidateView() {
           <div className="space-y-5">
 
             <VerifiedEvidence skills={skillEvidence} certificates={certificates} />
+
+            <CandidateAnswers answers={answers} />
 
             {/* Skills */}
             {candidate.skills?.length > 0 && (

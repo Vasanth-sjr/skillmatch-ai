@@ -90,6 +90,44 @@ export async function loadCandidateSkillEvidence(
   });
 }
 
+export interface CandidateAnswer {
+  questionId: string;
+  careerPath: string;
+  answerText: string;
+  answeredAt: string;
+}
+
+/**
+ * A candidate's written interview answers.
+ *
+ * Returns [] both when the candidate hasn't consented and when they've
+ * written nothing — the RLS policy simply yields no rows either way, and
+ * the caller is not told which. That's deliberate: revealing "this person
+ * has answers but won't show you" would pressure candidates into
+ * consenting, which is not consent.
+ */
+export async function loadCandidateAnswers(candidateId: string): Promise<CandidateAnswer[]> {
+  const { data, error } = await (supabase as any)
+    .from("interview_answers")
+    .select("question_id, career_path, answer_text, answered_at")
+    .eq("user_id", candidateId)
+    .order("answered_at", { ascending: false });
+
+  if (error) {
+    // A permission error here is the expected path for a non-consenting
+    // candidate, so this is logged at debug rather than as a failure.
+    console.debug("No interview answers available for this candidate:", error.message);
+    return [];
+  }
+
+  return (data ?? []).map((row: any) => ({
+    questionId: row.question_id,
+    careerPath: row.career_path,
+    answerText: row.answer_text,
+    answeredAt: row.answered_at,
+  }));
+}
+
 export interface CandidateEvidenceSummary {
   corroboratedSkills: number;
   verifiedCertificates: number;

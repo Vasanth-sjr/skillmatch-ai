@@ -2,7 +2,9 @@ import { useState, useMemo, useEffect } from "react";
 import { DashboardSidebar } from "@/components/dashboard/DashboardSidebar";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { useAuth } from "@/components/AuthProvider";
+import { AnswerSharingConsent } from "@/components/interviews/AnswerSharingConsent";
 import { supabase } from "@/integrations/supabase/client";
+import { useToast } from "@/hooks/use-toast";
 import { INTERVIEW_QUESTIONS, InterviewQuestion, Difficulty } from "@/data/interviewQuestions";
 import { CAREER_PATHS, CareerPathKey } from "@/data/careerPaths";
 import { scoreInterviewAnswer } from "@/lib/interviewAnalyzer";
@@ -186,7 +188,8 @@ function QuestionCard({
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 const Interviews = () => {
-  const { user, profile } = useAuth();
+  const { user, profile, refreshProfile } = useAuth();
+  const { toast } = useToast();
 
   const [selectedPath, setSelectedPath] = useState<CareerPathKey>(
     (profile?.career_goal as CareerPathKey) || "frontend_dev",
@@ -218,6 +221,28 @@ const Interviews = () => {
     if (user) saveRatings(user.id, selectedPath, next);
   };
 
+  const setAnswerSharing = async (next: boolean) => {
+    if (!user) return;
+    const { error } = await (supabase as any)
+      .from("profiles")
+      .update({ share_interview_answers: next })
+      .eq("id", user.id);
+
+    if (error) {
+      console.error("Couldn't update answer sharing:", error);
+      toast({
+        title: "Couldn't change that setting",
+        description: error.message,
+        variant: "destructive",
+      });
+      return;
+    }
+    await refreshProfile();
+    toast({
+      title: next ? "Answers shared with employers you apply to" : "Answers are private again",
+    });
+  };
+
   const submitAnswer = (qId: string, answer: string) => {
     setSubmittedAnswers(prev => ({ ...prev, [qId]: answer }));
 
@@ -241,6 +266,21 @@ const Interviews = () => {
     (supabase as any).from("interview_answer_analysis").insert(rows)
       .then(({ error }: { error: any }) => {
         if (error) console.error("Failed to save interview answer analysis:", error);
+      });
+
+    // Store the answer itself, not just its derived score. Recruiters
+    // find a candidate's actual words far more convincing than a number,
+    // and it is only ever shown to an employer the candidate applied to,
+    // and only if they have opted in.
+    (supabase as any).from("interview_answers").upsert({
+      user_id: user.id,
+      question_id: qId,
+      career_path: selectedPath,
+      answer_text: answer.trim(),
+      answered_at: new Date().toISOString(),
+    }, { onConflict: "user_id,question_id" })
+      .then(({ error }: { error: any }) => {
+        if (error) console.error("Failed to save interview answer:", error);
       });
   };
 
@@ -284,6 +324,11 @@ const Interviews = () => {
               <RotateCcw className="h-3.5 w-3.5" /> Reset All
             </button>
           </div>
+
+          <AnswerSharingConsent
+            enabled={Boolean((profile as any)?.share_interview_answers)}
+            onChange={setAnswerSharing}
+          />
 
           {/* How it works banner */}
           <div className="rounded-none bg-[--ag-surface] border border-[--ag-accent]/20 p-4">

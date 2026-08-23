@@ -101,6 +101,10 @@ export default function Candidates() {
   const [statusFilter, setStatusFilter] = useState<Status | "all">("all");
   const [updating, setUpdating] = useState<string | null>(null);
   const [sortByScore, setSortByScore] = useState(false);
+  // Evidence filtering: the point of the whole evidence layer is to let a
+  // recruiter skip profiles rather than open all of them, so this belongs
+  // on the list, not one level in.
+  const [evidenceFilter, setEvidenceFilter] = useState<"all" | "any" | "verified">("all");
 
   const fetchData = async () => {
     if (!user) return;
@@ -203,14 +207,21 @@ export default function Candidates() {
       const matchesSearch = !q || name.includes(q) || email.includes(q) || job.includes(q);
       const matchesJob = jobFilter === "all" || a.job?.id === jobFilter;
       const matchesStatus = statusFilter === "all" || a.status === statusFilter;
-      return matchesSearch && matchesJob && matchesStatus;
+
+      const ev = a.applicant?.id ? evidenceSummaries[a.applicant.id] : undefined;
+      const matchesEvidence =
+        evidenceFilter === "all" ||
+        (evidenceFilter === "any" && (ev?.corroboratedSkills ?? 0) > 0) ||
+        (evidenceFilter === "verified" && (ev?.verifiedCertificates ?? 0) > 0);
+
+      return matchesSearch && matchesJob && matchesStatus && matchesEvidence;
     });
 
     if (sortByScore) {
       list = [...list].sort((a, b) => (b.breakdown?.total ?? 0) - (a.breakdown?.total ?? 0));
     }
     return list;
-  }, [scored, search, jobFilter, statusFilter, sortByScore]);
+  }, [scored, search, jobFilter, statusFilter, sortByScore, evidenceFilter, evidenceSummaries]);
 
   const counts: Record<string, number> = { all: applicants.length };
   STATUSES.forEach(s => { counts[s] = applicants.filter(a => a.status === s).length; });
@@ -246,6 +257,37 @@ export default function Candidates() {
             <ArrowUpDown className="h-3.5 w-3.5" />
             Sort by Fit Score
           </button>
+        </div>
+
+        {/* Evidence filter — lets a recruiter narrow to candidates whose
+            claims are independently backed, which is the screening step
+            this platform exists to make possible. */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-bold uppercase tracking-wider text-[--ag-muted]">Evidence:</span>
+          {([
+            ["all", "All candidates"],
+            ["any", "Has corroborated skills"],
+            ["verified", "Has verified certificate"],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setEvidenceFilter(key)}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold border transition-all",
+                evidenceFilter === key
+                  ? "bg-[--ag-success] border-[--ag-success] text-white"
+                  : "bg-[--ag-surface] border-[--ag-border] text-[--ag-muted] hover:border-[--ag-success]/40",
+              )}
+            >
+              {key !== "all" && <ShieldCheck className="h-3 w-3" />}
+              {label}
+            </button>
+          ))}
+          {evidenceFilter !== "all" && (
+            <span className="text-[11px] text-[--ag-muted]">
+              Candidates without evidence may simply not have used the platform yet.
+            </span>
+          )}
         </div>
 
         {/* Filters */}
