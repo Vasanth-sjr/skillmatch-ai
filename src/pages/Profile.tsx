@@ -24,6 +24,8 @@ import {
   downloadCertificateFile, StoredCertificateDocument,
 } from "@/lib/certificates/certificateStorage";
 import { assessCredentialTrust } from "@/lib/certificates/credentialTrust";
+import { LinkedInImportPanel } from "@/components/profile/LinkedInImport";
+import { MergePlan } from "@/lib/linkedin/mergePlan";
 import {
   User, MapPin, Briefcase, GraduationCap, Link2,
   Award, Edit3, Check, X, Plus, Trash2,
@@ -581,6 +583,7 @@ export default function Profile() {
   // credential ID). Holding the text lets us re-analyse on every edit
   // without re-parsing the PDF.
   const [pendingText, setPendingText] = useState<string | null>(null);
+  const [importingLinkedIn, setImportingLinkedIn] = useState(false);
 
   useEffect(() => {
     if (!profile) return;
@@ -901,6 +904,76 @@ export default function Profile() {
     }
   };
 
+  /**
+   * Applies an approved LinkedIn merge plan.
+   *
+   * Strictly additive: selected items are appended to what's already
+   * there, and profile fields are only filled when currently blank. The
+   * plan builder already unticks anything that looks like a duplicate,
+   * so this doesn't need to de-duplicate again — but it must never
+   * replace, because the Resume Context Analyzer reads this text and a
+   * silent overwrite would move confidence scores invisibly.
+   */
+  const applyLinkedInImport = async (plan: MergePlan) => {
+    if (!user) return;
+    setImportingLinkedIn(true);
+
+    const picked = <T,>(items: { value: T; selected: boolean }[]) =>
+      items.filter(i => i.selected).map(i => i.value);
+
+    const fields: Record<string, unknown> = {};
+    for (const f of plan.fillable) {
+      if (f.selected) fields[f.key] = f.value;
+    }
+
+    const newSkills = picked(plan.skills) as string[];
+    if (newSkills.length) fields.skills = [...skills, ...newSkills];
+
+    const newExp = picked(plan.experience);
+    if (newExp.length) fields.experience = [...experience, ...newExp];
+
+    const newEdu = picked(plan.education);
+    if (newEdu.length) fields.education = [...education, ...newEdu];
+
+    const newProj = picked(plan.projects);
+    if (newProj.length) {
+      fields.projects = [
+        ...projects.map(p => ({ ...p, techStack: p.techStack.split(",").map(s => s.trim()).filter(Boolean) })),
+        ...newProj.map((p: any) => ({ ...p, techStack: [] })),
+      ];
+    }
+
+    const newCerts = picked(plan.certificates);
+    if (newCerts.length) fields.certifications = [...certifications, ...newCerts];
+
+    if (Object.keys(fields).length === 0) {
+      setImportingLinkedIn(false);
+      toast({ title: "Nothing selected to import" });
+      return;
+    }
+
+    const { error } = await (supabase as any)
+      .from("profiles")
+      .update({ ...fields, updated_at: new Date().toISOString() })
+      .eq("id", user.id);
+
+    setImportingLinkedIn(false);
+
+    if (error) {
+      console.error("LinkedIn import failed:", error);
+      toast({ title: "Import failed", description: error.message, variant: "destructive" });
+      return;
+    }
+
+    await refreshProfile();
+    toast({
+      title: "Imported from LinkedIn",
+      description: newCerts.length
+        ? `${newCerts.length} certificate${newCerts.length === 1 ? "" : "s"} added — verification runs automatically.`
+        : "Your profile has been updated.",
+    });
+  };
+
   const initials = (fullName || user?.email || "U").charAt(0).toUpperCase();
 
   return (
@@ -987,6 +1060,16 @@ export default function Profile() {
               )}
             </div>
           </div>
+
+          <LinkedInImportPanel
+            currentProfile={{
+              full_name: fullName, headline, location,
+              skills, experience, education,
+              projects, certifications,
+            }}
+            onApply={applyLinkedInImport}
+            applying={importingLinkedIn}
+          />
 
           <div className="grid lg:grid-cols-3 gap-5">
             {/* Left column */}
